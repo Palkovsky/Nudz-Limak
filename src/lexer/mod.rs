@@ -3,8 +3,8 @@ pub trait Stream<T> {
     fn revert(&mut self) -> Option<T>;
 
     fn is_finished(&mut self) -> bool {
-        let char = self.next();
-        if char.is_some() {
+        let item = self.next();
+        if item.is_some() {
             self.revert();
             false
         } else {
