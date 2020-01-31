@@ -1,3 +1,4 @@
+
 pub trait Stream<T> {
     fn next(&mut self) -> Option<T>;
     fn revert(&mut self) -> Option<T>;
@@ -13,13 +14,13 @@ pub trait Stream<T> {
     }
 }
 
-struct CharStream {
+pub struct CharStream {
     chars: Vec<char>,
     stack: Vec<char>
 }
 
 impl CharStream {
-    fn from(string: impl Into<String>) -> CharStream {
+    pub fn from(string: impl Into<String>) -> CharStream {
         let as_str = string.into();
         CharStream {
             chars: as_str.chars().collect(),
@@ -27,18 +28,18 @@ impl CharStream {
         }
     }
 
-    fn consumed(&self) -> String {
+    pub fn consumed(&self) -> String {
         self.stack.iter().fold(String::new(), |acc, x| format!("{}{}", acc, x))
     }
 
-    fn left(&self) -> String {
+    pub fn left(&self) -> String {
         self.chars.iter().fold(String::new(), |acc, x| format!("{}{}", acc, x))
     }
 }
 
 impl Stream<char> for CharStream {
     fn next(&mut self) -> Option<char> {
-        let x = self.chars.first().map(|x| *x)?;
+        let x = *self.chars.first()?;
         self.stack.push(x);
         self.chars.remove(0);
         Some(x)
@@ -139,7 +140,8 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
                 let chunk = (0..chunk_size)
                     .map(|_| self.char_stream.next())
                     .fold(String::new(), |acc, chr| {
-                        if let Some(y) = chr.map(|x| format!("{}{}", acc, x)) {
+                        let joined = chr.map(|x| format!("{}{}", acc, x));
+                        if let Some(y) = joined {
                             y
                         } else {
                             acc

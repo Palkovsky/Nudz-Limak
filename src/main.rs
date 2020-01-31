@@ -1,5 +1,5 @@
-mod lexer;
+use lexer::TokenStream;
 
 fn main() {
-    
+
 }
