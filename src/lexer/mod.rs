@@ -38,20 +38,16 @@ impl CharStream {
 
 impl Stream<char> for CharStream {
     fn next(&mut self) -> Option<char> {
-        let first = self.chars.first().map(|x| *x);
-        if let Some(x) = first {
-            self.stack.push(x);
-            self.chars.remove(0);
-        }
-        first
+        let x = self.chars.first().map(|x| *x)?;
+        self.stack.push(x);
+        self.chars.remove(0);
+        Some(x)
     }
 
     fn revert(&mut self) -> Option<char> {
-        let last = self.stack.pop();
-        if let Some(x) = last {
-            self.chars.insert(0, x);
-        }
-        last
+        let x = self.stack.pop()?;
+        self.chars.insert(0, x);
+        Some(x)
     }
 }
 
@@ -184,15 +180,11 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
     }
 
     fn revert(&mut self) -> Option<T> {
-        let last = self.stack.pop();
-        if let Some((token, len)) = last {
-            (0..len).for_each(|_| {
-                self.char_stream.revert();
-            });
-            Some(token)
-        } else {
-            None
-        }
+        let (token, len) = self.stack.pop()?;
+        (0..len).for_each(|_| {
+            self.char_stream.revert();
+        });
+        Some(token)
     }
 }
 
