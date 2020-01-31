@@ -85,7 +85,6 @@ fn char_stream_test() {
 
 #[derive(Clone, Copy)]
 pub enum RuleStatus<T> {
-    RequestN(usize),
     Request,
     Fail,
     Token(T),
@@ -161,11 +160,6 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
                     RuleStatus::Request => {
                         revert_chars(&mut self.char_stream);
                         chunk_size += 1;
-                    },
-                    // Lexer requested more characters
-                    RuleStatus::RequestN(i) => {
-                        revert_chars(&mut self.char_stream);
-                        chunk_size += i;
                     },
                     // Rule didn't recognize token
                     RuleStatus::Fail => {
