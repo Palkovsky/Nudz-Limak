@@ -145,11 +145,13 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
                             acc
                         }
                     });
+
                 let eof = self.char_stream.is_finished();
                 let func = self.rules.get(i).unwrap();
-                let revert_chars = |stream: &mut S| (0..chunk_size).for_each(|_| {
+
+                let revert_chars = |stream: &mut S| for _ in 0..chunk_size {
                     stream.revert();
-                });
+                };
 
                 match func(chunk, eof) {
                     // Lexer requested one more character
@@ -181,9 +183,9 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
 
     fn revert(&mut self) -> Option<T> {
         let (token, len) = self.stack.pop()?;
-        (0..len).for_each(|_| {
+        for _ in 0..len {
             self.char_stream.revert();
-        });
+        }
         Some(token)
     }
 }
@@ -254,18 +256,14 @@ fn token_stream_test() {
             return RuleStatus::Fail;
         }
 
-        let first = chars.first().unwrap();
-        let last = chars.last().unwrap();
+        let first = *chars.first().unwrap();
+        let last = *chars.last().unwrap();
 
-        if !first.is_ascii_alphabetic() {
-            return RuleStatus::Fail;
+        match (first.is_ascii_alphabetic(), last.is_ascii_alphanumeric()) {
+            (false, _) => RuleStatus::Fail,
+            (_, false) => RuleStatus::TokenWithDrop(TestToken::IDENT(String::from(&chunk[..chunk.len()-1]))),
+            _          => RuleStatus::Request
         }
-
-        if !last.is_ascii_alphanumeric() {
-            return RuleStatus::TokenWithDrop(TestToken::IDENT(String::from(&chunk[..chunk.len()-1])));
-        }
-
-        return RuleStatus::Request;
     });
 
     ts.string(" let  letXDD21 = 21 12xd ");
