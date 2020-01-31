@@ -1,6 +1,3 @@
-use std::collections::HashSet;
-use std::iter::FromIterator;
-
 pub trait Stream<T> {
     fn next(&mut self) -> Option<T>;
     fn revert(&mut self) -> Option<T>;
@@ -103,13 +100,22 @@ pub struct TokenStream<'r, S: Stream<char>, T: Clone> {
 
 // Constructor for the concrete CharStream
 impl<'r, T: Clone> TokenStream<'r, CharStream, T> {
-    pub fn from(string: impl Into<String>) -> Self {
-        Self::new(CharStream::from(string))
+    pub fn from_string(string: impl Into<String>) -> Self {
+        Self::from_char_stream(CharStream::from(string))
+    }
+
+    pub fn new() -> Self {
+        Self::from_char_stream(CharStream::from(String::new()))
+    }
+
+    pub fn string(&mut self, stream: impl Into<String>) -> &mut Self {
+        self.char_stream = CharStream::from(stream);
+        self
     }
 }
 
 impl<'r, T: Clone, S: Stream<char>> TokenStream<'r, S, T> {
-    pub fn new(char_stream: S) -> Self {
+    pub fn from_char_stream(char_stream: S) -> Self {
         Self {
             char_stream: char_stream,
             rules: Vec::new(),
@@ -119,6 +125,11 @@ impl<'r, T: Clone, S: Stream<char>> TokenStream<'r, S, T> {
 
     pub fn rule(&mut self, func: &'r dyn Fn(String, bool) -> RuleStatus<T>) -> &mut Self {
         self.rules.push(func);
+        self
+    }
+
+    pub fn stream(&mut self, stream: S) -> &mut Self {
+        self.char_stream = stream;
         self
     }
 }
@@ -166,9 +177,9 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
                         self.stack.push((token.clone(), chunk_size));
                         return Some(token);
                     },
-                    // Rule recognized token, but consumed one character too many
+                    // Rule recognized token, but consumed one extra character
                     RuleStatus::TokenWithDrop(token) => {
-                        self.stack.push((token.clone(), chunk_size));
+                        self.stack.push((token.clone(), chunk_size-1));
                         self.char_stream.revert();
                         return Some(token);
                     }
@@ -192,7 +203,7 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum TestToken {
+enum TestToken {
     EOF,
     LET,
     IDENT(String),
@@ -203,8 +214,7 @@ pub enum TestToken {
 
 #[test]
 fn token_stream_test() {
-    let mut ts = TokenStream::from(" let  letXDD21 = 21  ");
-
+    let mut ts = TokenStream::new();
     ts.rule(&|chunk, eof| {
         match (chunk.len() == 0, eof) {
             (true, true) => RuleStatus::Token(TestToken::EOF),
@@ -246,7 +256,7 @@ fn token_stream_test() {
             (true, false) => {
                 let cand = &chunk[..chunk.len()-1].to_string();
                 match cand.parse::<f64>() {
-                    Ok(num) => RuleStatus::Token(TestToken::NUMERIC(num)),
+                    Ok(num) => RuleStatus::TokenWithDrop(TestToken::NUMERIC(num)),
                     _ => RuleStatus::Fail
                 }
             }
@@ -272,6 +282,7 @@ fn token_stream_test() {
         return RuleStatus::Request;
     });
 
+    ts.string(" let  letXDD21 = 21 12xd ");
     assert_eq!(Some(TestToken::WHITESPACE), ts.next());
     assert_eq!(Some(TestToken::LET), ts.next());
     assert_eq!(Some(TestToken::WHITESPACE), ts.next());
@@ -281,10 +292,11 @@ fn token_stream_test() {
     assert_eq!(Some(TestToken::WHITESPACE), ts.next());
     assert_eq!(Some(TestToken::NUMERIC(21f64)), ts.next());
     assert_eq!(Some(TestToken::WHITESPACE), ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.revert());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.next());
+    assert_eq!(Some(TestToken::IDENT("xd".to_owned())), ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
     assert_eq!(Some(TestToken::EOF), ts.next());
     assert_eq!(Some(TestToken::EOF), ts.next());
-}
-
-pub fn tokens(input: String) {
-    println!("lex lex lex");
 }
