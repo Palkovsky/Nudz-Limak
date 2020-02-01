@@ -5,12 +5,33 @@ pub trait Stream<T> {
 
     fn is_finished(&mut self) -> bool {
         let item = self.next();
+
         if item.is_some() {
             self.revert();
             false
         } else {
             true
         }
+    }
+
+    fn peek(&mut self, n: usize) -> Vec<T> {
+        let mut i = 0;
+        let mut buff = Vec::with_capacity(n);
+
+        while i < n {
+            if let Some(x) = self.next() {
+                buff.push(x);
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        for _ in 0..i {
+            self.revert();
+        }
+
+        buff
     }
 }
 
@@ -91,7 +112,8 @@ pub enum RuleStatus<T> {
 pub struct TokenStream<'r, S: Stream<char>, T: Clone> {
     char_stream: S,
     rules: Vec<&'r dyn Fn(String, bool) -> RuleStatus<T>>,
-    stack: Vec<(T, usize)>
+    stack: Vec<(T, usize)>,
+    error: Option<String>
 }
 
 // Constructor for the concrete CharStream
@@ -106,6 +128,7 @@ impl<'r, T: Clone> TokenStream<'r, CharStream, T> {
 
     pub fn string(&mut self, stream: impl Into<String>) -> &mut Self {
         self.char_stream = CharStream::from(stream);
+        self.error = None;
         self
     }
 }
@@ -115,7 +138,8 @@ impl<'r, T: Clone, S: Stream<char>> TokenStream<'r, S, T> {
         Self {
             char_stream: char_stream,
             rules: Vec::new(),
-            stack: Vec::new()
+            stack: Vec::new(),
+            error: None
         }
     }
 
@@ -126,12 +150,18 @@ impl<'r, T: Clone, S: Stream<char>> TokenStream<'r, S, T> {
 
     pub fn stream(&mut self, stream: S) -> &mut Self {
         self.char_stream = stream;
+        self.error = None;
         self
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.clone()
     }
 }
 
 impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
     fn next(&mut self) -> Option<T> {
+        self.error = None;
         for i in 0..self.rules.len() {
             let mut finished = false;
             let mut chunk_size = 1;
@@ -180,16 +210,28 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
                 }
             }
         }
+
+        // Add error message
+        let err = self.char_stream.peek(5)
+            .into_iter()
+            .fold(String::new(), |acc, x| format!("{}{}", acc, x));
+        self.error = Some(format!("Invalid token '{}'", err));
         None
     }
 
     fn revert(&mut self) -> Option<T> {
         let (token, len) = self.stack.pop()?;
+        self.error = None;
         for _ in 0..len {
             self.char_stream.revert();
         }
         Some(token)
     }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum BinOp {
+    PLUS, MINUS, MODULO
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -199,7 +241,72 @@ enum TestToken {
     IDENT(String),
     NUMERIC(f64),
     EQ,
+    BIN_OP(BinOp),
     WHITESPACE,
+}
+
+#[test]
+fn token_stream_error_test() {
+    let mut ts = TokenStream::from_string("1+1=1xd2+2=2");
+
+    ts.rule(&|chunk, eof| {
+        match (chunk.len() == 0, eof) {
+            (true, true) => RuleStatus::Token(TestToken::EOF),
+            _            => RuleStatus::Fail
+        }
+    }).rule(&|chunk, _| {
+        match chunk.as_str() {
+            "=" => RuleStatus::Token(TestToken::EQ),
+            "+" => RuleStatus::Token(TestToken::BIN_OP(BinOp::PLUS)),
+            "-" => RuleStatus::Token(TestToken::BIN_OP(BinOp::MINUS)),
+            "%" => RuleStatus::Token(TestToken::BIN_OP(BinOp::MODULO)),
+            _   => RuleStatus::Fail
+        }
+    }).rule(&|chunk, eof| {
+        let chars = chunk.chars().collect::<Vec<char>>();
+        if chars.len() == 0 {
+            return RuleStatus::Fail;
+        }
+
+        let first = *chars.first().unwrap();
+        let last = *chars.last().unwrap();
+
+        match (first.is_numeric(), last.is_numeric() || last == '.', eof) {
+            (false, _, _)       => RuleStatus::Fail,
+            (true, true, true)  => {
+                match chunk.parse::<f64>() {
+                    Ok(num) => RuleStatus::Token(TestToken::NUMERIC(num)),
+                    _       => RuleStatus::Fail
+                }
+            },
+            (true, true, false) => RuleStatus::Request,
+            (true, false, _)    => {
+                let cand = &chunk[..chunk.len()-1].to_string();
+                match cand.parse::<f64>() {
+                    Ok(num) => RuleStatus::TokenWithDrop(TestToken::NUMERIC(num)),
+                    _ => RuleStatus::Fail
+                }
+            }
+        }
+    });
+
+    assert_eq!(Some(TestToken::NUMERIC(1f64)),       ts.next());
+    assert_eq!(Some(TestToken::BIN_OP(BinOp::PLUS)), ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(1f64)),       ts.next());
+    assert_eq!(Some(TestToken::EQ),                  ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(1f64)),       ts.next());
+    assert!(ts.error().is_none());
+    assert_eq!(None,                                 ts.next());
+    assert!(ts.error().is_some());
+    assert_eq!(Some(TestToken::NUMERIC(1f64)),       ts.revert());
+    assert!(ts.error().is_none());
+    assert_eq!(Some(TestToken::NUMERIC(1f64)),       ts.next());
+    assert_eq!(None,                                 ts.next());
+    assert!(ts.error().is_some());
+    assert_eq!(None,                                 ts.next());
+    assert!(ts.error().is_some());
+    assert_eq!(None,                                 ts.next());
+    assert!(ts.error().is_some());
 }
 
 #[test]
@@ -251,7 +358,6 @@ fn token_stream_test() {
                 }
             }
         }
-
     }).rule(&|chunk, _| {
         let chars = chunk.chars().collect::<Vec<char>>();
         if chars.len() == 0 {
@@ -269,20 +375,20 @@ fn token_stream_test() {
     });
 
     ts.string(" let  letXDD21 = 21 12xd ");
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
-    assert_eq!(Some(TestToken::LET), ts.next());
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
+    assert_eq!(Some(TestToken::LET),                          ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
     assert_eq!(Some(TestToken::IDENT("letXDD21".to_owned())), ts.next());
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
-    assert_eq!(Some(TestToken::EQ), ts.next());
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
-    assert_eq!(Some(TestToken::NUMERIC(21f64)), ts.next());
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
-    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.next());
-    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.revert());
-    assert_eq!(Some(TestToken::NUMERIC(12f64)), ts.next());
-    assert_eq!(Some(TestToken::IDENT("xd".to_owned())), ts.next());
-    assert_eq!(Some(TestToken::WHITESPACE), ts.next());
-    assert_eq!(Some(TestToken::EOF), ts.next());
-    assert_eq!(Some(TestToken::EOF), ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
+    assert_eq!(Some(TestToken::EQ),                           ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(21f64)),               ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)),               ts.next());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)),               ts.revert());
+    assert_eq!(Some(TestToken::NUMERIC(12f64)),               ts.next());
+    assert_eq!(Some(TestToken::IDENT("xd".to_owned())),       ts.next());
+    assert_eq!(Some(TestToken::WHITESPACE),                   ts.next());
+    assert_eq!(Some(TestToken::EOF),                          ts.next());
+    assert_eq!(Some(TestToken::EOF),                          ts.next());
 }
