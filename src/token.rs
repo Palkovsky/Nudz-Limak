@@ -139,7 +139,7 @@ pub fn mk_tokens(input: String) -> Result<Vec<Token>, TokenzierError> {
             "d" | "de" | "def"          => LexStatus::Request,
             "def "                      => LexStatus::TokenWithDrop(Token::DEF),
             "l" | "le" | "let"          => LexStatus::Request,
-            "let "                      => LexStatus::TokenWithDrop(Token::DEF),
+            "let "                      => LexStatus::TokenWithDrop(Token::LET),
             "i" | "if"                  => LexStatus::Request,
             "if " | "if("               => LexStatus::TokenWithDrop(Token::IF),
             "e" | "el" | "els" | "else" => LexStatus::Request,
