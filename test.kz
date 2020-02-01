@@ -1,8 +1,13 @@
 # Compute the x'th fibonacci number.
 def fib(x) {
   let y = 21.37
+
   if x {
     1
+    let n = xd
+    if y {
+       37.21
+    }
   } else {
     fib(x)
   }

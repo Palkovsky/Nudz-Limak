@@ -48,11 +48,12 @@ impl SingleTokenExprAST {
             Some(x) => {
                 if x == expected {
                     return Ok(Self)
-                };
+                }
                 Some(x)
             },
             _ => None
         };
+        input.revert();
         Err(ParserError::from(format!("Got '{:?}'. Expected '{:?}'", x, expected)))
     }
 }
@@ -204,6 +205,7 @@ impl ASTNode for BlockExprAST {
         }
 
         SingleTokenExprAST::expect(Token::BLOCK_CL, input)?;
+
         Ok(Self { body: exprs } )
     }
 }
@@ -222,6 +224,8 @@ impl ASTNode for IfElseExprAST {
 
         let cond = IdentifierExprAST::run_parser(input)?;
         let block_if = BlockExprAST::run_parser(input)?;
+
+        println!("NXT: {:?}", input.peek1());
         let block_else = if let Ok(_) = SingleTokenExprAST::expect(Token::ELSE, input) {
             Some(BlockExprAST::run_parser(input)?)
         } else {
