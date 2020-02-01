@@ -1,6 +1,14 @@
 mod token;
+use token::mk_tokens;
+pub use token::{
+    Token,
+    TokenzierError,
+    BinOp
+};
 
-use token::*;
+mod ast;
+use ast::mk_ast;
+
 use std::io::{self, Read};
 
 fn main() -> io::Result<()> {
@@ -9,8 +17,12 @@ fn main() -> io::Result<()> {
     io::stdin().read_to_string(&mut buffer)?;
 
     // Generate tokens
-    let tokens = mk_tokens(buffer);
+    let mut tokens = mk_tokens(buffer).unwrap();
     println!("{:?}", tokens);
+
+    let ast = mk_ast(&mut tokens);
+    println!("{:#?}", ast);
+
 
     Ok(())
 }

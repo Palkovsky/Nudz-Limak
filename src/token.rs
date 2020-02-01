@@ -1,5 +1,6 @@
 use lexer::{
     Stream,
+    VecStream,
     TokenStream,
     LexStatus
 };
@@ -33,6 +34,7 @@ pub enum Token {
     PAREN_CL,
     BLOCK_OP,
     BLOCK_CL,
+    COMMA,
     IDENT(String),
     BIN_OP(BinOp),
     NUM(f64)
@@ -68,7 +70,7 @@ fn drop_comments(input: String) -> String {
     })
 }
 
-pub fn mk_tokens(input: String) -> Result<Vec<Token>, TokenzierError> {
+pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
     let mut ts = TokenStream::<_, Token>::new();
 
     // Detecting EOF
@@ -97,6 +99,7 @@ pub fn mk_tokens(input: String) -> Result<Vec<Token>, TokenzierError> {
             ")"  => LexStatus::Token(Token::PAREN_CL),
             "{"  => LexStatus::Token(Token::BLOCK_OP),
             "}"  => LexStatus::Token(Token::BLOCK_CL),
+            ","  => LexStatus::Token(Token::COMMA),
             "+"  => LexStatus::Token(Token::BIN_OP(BinOp::ADD)),
             "-"  => LexStatus::Token(Token::BIN_OP(BinOp::SUB)),
             "*"  => LexStatus::Token(Token::BIN_OP(BinOp::MUL)),
@@ -235,7 +238,10 @@ pub fn mk_tokens(input: String) -> Result<Vec<Token>, TokenzierError> {
                 return Err(TokenzierError::from(err));
             },
             // EOF means end has been reached successfully
-            Some(Token::EOF)   => break,
+            Some(Token::EOF)   => {
+                tokens.push(Token::EOF);
+                break;
+            },
             // Ignore whitespaces
             Some(Token::SPACE) => {},
             // Otherwise add token to the output list
@@ -243,5 +249,5 @@ pub fn mk_tokens(input: String) -> Result<Vec<Token>, TokenzierError> {
         }
     }
 
-    Ok(tokens)
+    Ok(VecStream::from(tokens))
 }

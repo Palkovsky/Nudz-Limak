@@ -1,39 +1,7 @@
-pub trait Stream<T> {
-    fn next(&mut self) -> Option<T>;
-    fn revert(&mut self) -> Option<T>;
+mod stream;
+pub use stream::*;
 
-    fn is_finished(&mut self) -> bool {
-        let item = self.next();
-
-        if item.is_some() {
-            self.revert();
-            false
-        } else {
-            true
-        }
-    }
-
-    fn peek(&mut self, n: usize) -> Vec<T> {
-        let mut i = 0;
-        let mut buff = Vec::with_capacity(n);
-
-        while i < n {
-            if let Some(x) = self.next() {
-                buff.push(x);
-                i += 1;
-            } else {
-                break;
-            }
-        }
-
-        for _ in 0..i {
-            self.revert();
-        }
-
-        buff
-    }
-}
-
+#[derive(Clone)]
 pub struct CharStream {
     chars: Vec<char>,
     stack: Vec<char>
@@ -108,6 +76,7 @@ pub enum LexStatus<T> {
     TokenWithDrop(T)
 }
 
+#[derive(Clone)]
 pub struct TokenStream<'r, S: Stream<char>, T: Clone> {
     char_stream: S,
     rules: Vec<&'r dyn Fn(String, bool) -> LexStatus<T>>,

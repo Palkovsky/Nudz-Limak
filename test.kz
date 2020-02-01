@@ -1,9 +1,10 @@
 # Compute the x'th fibonacci number.
 def fib(x) {
-  if x <= 3 {
+  let y = 21.37
+  if x {
     1
   } else {
-    fib(x-1)+fib(x-2)
+    fib(x)
   }
 }
 
