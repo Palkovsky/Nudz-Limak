@@ -1,4 +1,3 @@
-
 pub trait Stream<T> {
     fn next(&mut self) -> Option<T>;
     fn revert(&mut self) -> Option<T>;
@@ -102,7 +101,7 @@ fn char_stream_test() {
 }
 
 #[derive(Clone, Copy)]
-pub enum RuleStatus<T> {
+pub enum LexStatus<T> {
     Request,
     Fail,
     Token(T),
@@ -111,7 +110,7 @@ pub enum RuleStatus<T> {
 
 pub struct TokenStream<'r, S: Stream<char>, T: Clone> {
     char_stream: S,
-    rules: Vec<&'r dyn Fn(String, bool) -> RuleStatus<T>>,
+    rules: Vec<&'r dyn Fn(String, bool) -> LexStatus<T>>,
     stack: Vec<(T, usize)>,
     error: Option<String>
 }
@@ -143,7 +142,7 @@ impl<'r, T: Clone, S: Stream<char>> TokenStream<'r, S, T> {
         }
     }
 
-    pub fn rule(&mut self, func: &'r dyn Fn(String, bool) -> RuleStatus<T>) -> &mut Self {
+    pub fn rule(&mut self, func: &'r dyn Fn(String, bool) -> LexStatus<T>) -> &mut Self {
         self.rules.push(func);
         self
     }
@@ -187,22 +186,22 @@ impl<'r, T: Clone, S: Stream<char>> Stream<T> for TokenStream<'r, S, T> {
 
                 match func(chunk, eof) {
                     // Lexer requested one more character
-                    RuleStatus::Request => {
+                    LexStatus::Request => {
                         revert_chars(&mut self.char_stream);
                         chunk_size += 1;
                     },
                     // Rule didn't recognize token
-                    RuleStatus::Fail => {
+                    LexStatus::Fail => {
                         revert_chars(&mut self.char_stream);
                         finished = true;
                     },
                     // Rule recognized token
-                    RuleStatus::Token(token) => {
+                    LexStatus::Token(token) => {
                         self.stack.push((token.clone(), chunk_size));
                         return Some(token);
                     },
                     // Rule recognized token, but consumed one extra character
-                    RuleStatus::TokenWithDrop(token) => {
+                    LexStatus::TokenWithDrop(token) => {
                         self.stack.push((token.clone(), chunk_size-1));
                         self.char_stream.revert();
                         return Some(token);
@@ -251,40 +250,40 @@ fn token_stream_error_test() {
 
     ts.rule(&|chunk, eof| {
         match (chunk.len() == 0, eof) {
-            (true, true) => RuleStatus::Token(TestToken::EOF),
-            _            => RuleStatus::Fail
+            (true, true) => LexStatus::Token(TestToken::EOF),
+            _            => LexStatus::Fail
         }
     }).rule(&|chunk, _| {
         match chunk.as_str() {
-            "=" => RuleStatus::Token(TestToken::EQ),
-            "+" => RuleStatus::Token(TestToken::BIN_OP(BinOp::PLUS)),
-            "-" => RuleStatus::Token(TestToken::BIN_OP(BinOp::MINUS)),
-            "%" => RuleStatus::Token(TestToken::BIN_OP(BinOp::MODULO)),
-            _   => RuleStatus::Fail
+            "=" => LexStatus::Token(TestToken::EQ),
+            "+" => LexStatus::Token(TestToken::BIN_OP(BinOp::PLUS)),
+            "-" => LexStatus::Token(TestToken::BIN_OP(BinOp::MINUS)),
+            "%" => LexStatus::Token(TestToken::BIN_OP(BinOp::MODULO)),
+            _   => LexStatus::Fail
         }
     }).rule(&|chunk, eof| {
         let chars = chunk.chars().collect::<Vec<char>>();
         if chars.len() == 0 {
-            return RuleStatus::Fail;
+            return LexStatus::Fail;
         }
 
         let first = *chars.first().unwrap();
         let last = *chars.last().unwrap();
 
         match (first.is_numeric(), last.is_numeric() || last == '.', eof) {
-            (false, _, _)       => RuleStatus::Fail,
+            (false, _, _)       => LexStatus::Fail,
             (true, true, true)  => {
                 match chunk.parse::<f64>() {
-                    Ok(num) => RuleStatus::Token(TestToken::NUMERIC(num)),
-                    _       => RuleStatus::Fail
+                    Ok(num) => LexStatus::Token(TestToken::NUMERIC(num)),
+                    _       => LexStatus::Fail
                 }
             },
-            (true, true, false) => RuleStatus::Request,
+            (true, true, false) => LexStatus::Request,
             (true, false, _)    => {
                 let cand = &chunk[..chunk.len()-1].to_string();
                 match cand.parse::<f64>() {
-                    Ok(num) => RuleStatus::TokenWithDrop(TestToken::NUMERIC(num)),
-                    _ => RuleStatus::Fail
+                    Ok(num) => LexStatus::TokenWithDrop(TestToken::NUMERIC(num)),
+                    _ => LexStatus::Fail
                 }
             }
         }
@@ -314,63 +313,63 @@ fn token_stream_test() {
     let mut ts = TokenStream::new();
     ts.rule(&|chunk, eof| {
         match (chunk.len() == 0, eof) {
-            (true, true) => RuleStatus::Token(TestToken::EOF),
-            _            => RuleStatus::Fail
+            (true, true) => LexStatus::Token(TestToken::EOF),
+            _            => LexStatus::Fail
         }
     }).rule(&|chunk, eof| {
         match (chunk.starts_with(" "), chunk.ends_with(" "), eof) {
-            (false, _, _)       => RuleStatus::Fail,
-            (true, true, true)  => RuleStatus::Token(TestToken::WHITESPACE),
-            (true, true, false) => RuleStatus::Request,
-            (true, false, _)    => RuleStatus::TokenWithDrop(TestToken::WHITESPACE)
+            (false, _, _)       => LexStatus::Fail,
+            (true, true, true)  => LexStatus::Token(TestToken::WHITESPACE),
+            (true, true, false) => LexStatus::Request,
+            (true, false, _)    => LexStatus::TokenWithDrop(TestToken::WHITESPACE)
         }
     }).rule(&|chunk, _| {
         if chunk == "=" {
-            RuleStatus::Token(TestToken::EQ)
+            LexStatus::Token(TestToken::EQ)
         } else {
-            RuleStatus::Fail
+            LexStatus::Fail
         }
     }).rule(&|chunk, _| {
         match chunk.as_str() {
-            "l"    => RuleStatus::Request,
-            "le"   => RuleStatus::Request,
-            "let"  => RuleStatus::Request,
-            "let " => RuleStatus::TokenWithDrop(TestToken::LET),
-            _      => RuleStatus::Fail
+            "l"    => LexStatus::Request,
+            "le"   => LexStatus::Request,
+            "let"  => LexStatus::Request,
+            "let " => LexStatus::TokenWithDrop(TestToken::LET),
+            _      => LexStatus::Fail
         }
     }).rule(&|chunk, _| {
         let chars = chunk.chars().collect::<Vec<char>>();
         if chars.len() == 0 {
-            return RuleStatus::Fail;
+            return LexStatus::Fail;
         }
 
         let first = *chars.first().unwrap();
         let last = *chars.last().unwrap();
 
         match (first.is_numeric(), last.is_numeric() || last == '.') {
-            (false, _) => RuleStatus::Fail,
-            (true, true) => RuleStatus::Request,
+            (false, _) => LexStatus::Fail,
+            (true, true) => LexStatus::Request,
             (true, false) => {
                 let cand = &chunk[..chunk.len()-1].to_string();
                 match cand.parse::<f64>() {
-                    Ok(num) => RuleStatus::TokenWithDrop(TestToken::NUMERIC(num)),
-                    _ => RuleStatus::Fail
+                    Ok(num) => LexStatus::TokenWithDrop(TestToken::NUMERIC(num)),
+                    _ => LexStatus::Fail
                 }
             }
         }
     }).rule(&|chunk, _| {
         let chars = chunk.chars().collect::<Vec<char>>();
         if chars.len() == 0 {
-            return RuleStatus::Fail;
+            return LexStatus::Fail;
         }
 
         let first = *chars.first().unwrap();
         let last = *chars.last().unwrap();
 
         match (first.is_ascii_alphabetic(), last.is_ascii_alphanumeric()) {
-            (false, _) => RuleStatus::Fail,
-            (_, false) => RuleStatus::TokenWithDrop(TestToken::IDENT(String::from(&chunk[..chunk.len()-1]))),
-            _          => RuleStatus::Request
+            (false, _) => LexStatus::Fail,
+            (_, false) => LexStatus::TokenWithDrop(TestToken::IDENT(String::from(&chunk[..chunk.len()-1]))),
+            _          => LexStatus::Request
         }
     });
 
