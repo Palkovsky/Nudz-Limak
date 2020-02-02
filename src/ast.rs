@@ -1,17 +1,232 @@
-use super::Token;
+use super::{
+    Token,
+    BinOpMath,
+    BinOpCmp
+};
 use lexer::Stream;
 
 use std::{error, fmt};
+use std::collections::HashMap;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParserError {
     text: String
+}
+
+#[derive(Debug, Clone)]
+struct SingleTokenExprAST;
+
+#[derive(Debug, Clone)]
+pub struct NumLiteralExprAST {
+    value: f64
+}
+
+#[derive(Debug, Clone)]
+pub struct IdentifierExprAST {
+    name: String
+}
+
+#[derive(Debug, Clone)]
+pub struct BinOpMathExprAST {
+    lhs: ValuelikeExprAST,
+    op: BinOpMath,
+    rhs: ValuelikeExprAST
+}
+
+#[derive(Debug, Clone)]
+enum BinOpExprAtom {
+    Literal(NumLiteralExprAST),
+    Identifier(IdentifierExprAST),
+    Call(CallExprAST)
+}
+
+impl BinOpExprAtom {
+    fn valuelike(self) -> ValuelikeExprAST {
+        match self {
+            Self::Literal(num)      => ValuelikeExprAST::NumericLiteral(num),
+            Self::Identifier(ident) => ValuelikeExprAST::Identifier(ident),
+            Self::Call(call)        => ValuelikeExprAST::Call(call)
+        }
+    }
+}
+
+impl ASTNode for BinOpExprAtom {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        if let Ok(num) = NumLiteralExprAST::run_parser(input) {
+            Ok(Self::Literal(num))
+        } else if let Ok(ident) = CallExprAST::run_parser(input) {
+            Ok(Self::Call(ident))
+        } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
+            Ok(Self::Identifier(ident))
+        } else {
+            Err(ParserError::from(format!("Expected bin op atom. Got {:?}", input.peek1())))
+        }
+    }
+}
+
+impl BinOpMathExprAST {
+    fn precedence(op: BinOpMath) -> usize {
+        match op {
+            BinOpMath::MUL     => 100,
+            BinOpMath::DIV     => 100,
+            BinOpMath::MOD     => 100,
+            BinOpMath::ADD     => 90,
+            BinOpMath::SUB     => 90,
+            BinOpMath::BIT_AND => 80,
+            BinOpMath::BIT_OR  => 70
+        }
+    }
+
+    fn mk_tree(atoms: Vec<BinOpExprAtom>, ops: Vec<BinOpMath>) -> Result<Self, ParserError> {
+        let min_precedence = |slice: &[BinOpMath]| {
+            slice.into_iter()
+                .map(|op| Self::precedence(*op))
+                .fold(10000, |min, x| if min > x { x } else { min })
+        };
+
+        println!("ATOMS: {:?}", atoms);
+        println!("OPS:   {:?}", ops);
+
+        if atoms.len() == 2 && ops.len() == 1 {
+            let l = atoms.first().unwrap().clone();
+            let r = atoms.last().unwrap().clone();
+            let op = *ops.first().unwrap();
+            let expr = Self { lhs: l.valuelike(), rhs: r.valuelike(), op: op };
+            return Ok(expr);
+        }
+
+        let mut split = 0;
+        while split < ops.len() {
+            let op = *ops.get(split).unwrap();
+            let rest = &ops[(split+1)..];
+
+            if min_precedence(rest) < Self::precedence(op) {
+                split += 1;
+            } else {
+                let l_ops = &ops[..split];
+                let r_ops = &ops[split+1..];
+                let l_atoms = &atoms[..split];
+                let r_atoms = &atoms[split+1..];
+
+                let lhs = if l_ops.len() > 0 {
+                    ValuelikeExprAST::BinExpression(Box::new(
+                        Self::mk_tree(Vec::from(l_atoms), Vec::from(l_ops))?
+                    ))
+                } else {
+                    atoms.first().unwrap().clone().valuelike()
+                };
+
+                let rhs = if r_ops.len() > 0 {
+                    ValuelikeExprAST::BinExpression(Box::new(
+                        Self::mk_tree(Vec::from(r_atoms), Vec::from(r_ops))?
+                    ))
+                } else {
+                    atoms.last().unwrap().clone().valuelike()
+                };
+
+                let expr = Self { lhs: lhs, rhs:  rhs, op: op };
+                return Ok(expr)
+            }
+        }
+
+        Err(ParserError::from("Unable to create expression tree."))
+    }
+}
+
+impl ASTNode for BinOpMathExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        let mut atoms = Vec::new();
+        let mut ops   = Vec::new();
+
+        loop {
+            let atom = BinOpExprAtom::run_parser(input);
+            atoms.push(atom?);
+
+            match input.peek1() {
+                Some(Token::BIN_OP_MATH(op)) => {
+                    input.next(); // eat token
+                    ops.push(op);
+                },
+                _ => break
+            }
+        }
+
+
+        if ops.len() < 1 || atoms.len() < 2 || ops.len() != atoms.len() - 1 {
+            Err(ParserError::from(format!("Invalid math expression. Operands: '{:?}', operations: '{:?}'", atoms, ops)))?
+        }
+
+        Self::mk_tree(atoms, ops)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ValuelikeExprAST {
+    NumericLiteral(NumLiteralExprAST),
+    BinExpression(Box<BinOpMathExprAST>),
+    Identifier(IdentifierExprAST),
+    Call(CallExprAST)
+}
+
+#[derive(Debug, Clone)]
+pub struct CallExprAST {
+    name: IdentifierExprAST,
+    args: Vec<ValuelikeExprAST>
+}
+
+#[derive(Debug, Clone)]
+pub struct AssignmentExprAST {
+    ident: IdentifierExprAST,
+    value: ValuelikeExprAST
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockExprAST {
+    body: Vec<InBlockExprAST>
+}
+
+#[derive(Debug, Clone)]
+pub enum InBlockExprAST {
+    Assingment(AssignmentExprAST),
+    Valuelike(ValuelikeExprAST),
+    If(IfElseExprAST)
+}
+
+#[derive(Debug, Clone)]
+pub struct IfElseExprAST {
+    // Temporary
+    cond: IdentifierExprAST,
+    block_if: BlockExprAST,
+    block_else: Option<BlockExprAST>
+}
+
+#[derive(Debug, Clone)]
+pub struct FuncDefExprAST {
+    prototype: FuncPrototypeExprAST,
+    body: BlockExprAST
+}
+
+#[derive(Debug, Clone)]
+pub enum OutBlockExprAST {
+    Assingment(AssignmentExprAST),
+    FuncDef(FuncDefExprAST)
+}
+
+#[derive(Debug, Clone)]
+pub struct RootExprAST {
+    items: Vec<OutBlockExprAST>
 }
 
 impl ParserError {
     pub fn from(string: impl Into<String>) -> Self {
         Self { text: string.into() }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct FuncPrototypeExprAST {
+    name: IdentifierExprAST,
+    args: Vec<IdentifierExprAST>
 }
 
 impl error::Error for ParserError {}
@@ -40,8 +255,6 @@ pub trait ASTNode: Sized {
     }
 }
 
-#[derive(Debug)]
-struct SingleTokenExprAST;
 impl SingleTokenExprAST {
     fn expect(expected: Token, input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         let x = match input.next() {
@@ -64,12 +277,7 @@ impl ASTNode for SingleTokenExprAST {
     }
 }
 
-#[derive(Debug)]
-pub struct NumExprAST {
-    value: f64
-}
-
-impl ASTNode for NumExprAST {
+impl ASTNode for NumLiteralExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         let next = input.next();
         if let Some(Token::NUM(val)) = next {
@@ -78,11 +286,6 @@ impl ASTNode for NumExprAST {
             Err(ParserError::from(format!("Expected numeric. Got {:?}", next)))
         }
     }
-}
-
-#[derive(Debug)]
-pub struct IdentifierExprAST {
-    name: String
 }
 
 impl ASTNode for IdentifierExprAST {
@@ -94,12 +297,6 @@ impl ASTNode for IdentifierExprAST {
             Err(ParserError::from(format!("Expected identifier. Got {:?}", next)))
         }
     }
-}
-
-#[derive(Debug)]
-pub struct CallExprAST {
-    name: IdentifierExprAST,
-    args: Vec<ValuelikeExprAST>
 }
 
 impl ASTNode for CallExprAST {
@@ -124,32 +321,20 @@ impl ASTNode for CallExprAST {
     }
 }
 
-#[derive(Debug)]
-pub enum ValuelikeExprAST {
-    Numeric(NumExprAST),
-    Identifier(IdentifierExprAST),
-    Call(CallExprAST)
-}
-
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(numeric) = NumExprAST::run_parser(input) {
-            Ok(Self::Numeric(numeric))
+        if let Ok(expr) = BinOpMathExprAST::run_parser(input) {
+            Ok(Self::BinExpression(Box::new(expr)))
+        } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
+            Ok(Self::NumericLiteral(num))
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
         } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
             Ok(Self::Identifier(ident))
         } else {
-            let token = input.peek(1);
-            Err(ParserError::from(format!("Expected valuelike. Got {:?}", token.first())))
+            Err(ParserError::from(format!("Expected valuelike. Got {:?}", input.peek1())))
         }
     }
-}
-
-#[derive(Debug)]
-pub struct AssignmentExprAST {
-    ident: IdentifierExprAST,
-    value: ValuelikeExprAST
 }
 
 impl ASTNode for AssignmentExprAST {
@@ -168,13 +353,6 @@ impl ASTNode for AssignmentExprAST {
     }
 }
 
-#[derive(Debug)]
-pub enum InBlockExprAST {
-    Assingment(AssignmentExprAST),
-    Valuelike(ValuelikeExprAST),
-    If(IfElseExprAST)
-}
-
 impl ASTNode for InBlockExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         if let Ok(asign) = AssignmentExprAST::run_parser(input) {
@@ -184,15 +362,9 @@ impl ASTNode for InBlockExprAST {
         } else if let Ok(value) = ValuelikeExprAST::run_parser(input) {
             Ok(Self::Valuelike(value))
         } else {
-            let token = input.peek(1);
-            Err(ParserError::from(format!("Expected valuelike. Got {:?}", token.first())))
+            Err(ParserError::from(format!("Expected valuelike. Got {:?}", input.peek1())))
         }
     }
-}
-
-#[derive(Debug)]
-pub struct BlockExprAST {
-    body: Vec<InBlockExprAST>
 }
 
 impl ASTNode for BlockExprAST {
@@ -208,14 +380,6 @@ impl ASTNode for BlockExprAST {
 
         Ok(Self { body: exprs } )
     }
-}
-
-#[derive(Debug)]
-pub struct IfElseExprAST {
-    // Temporary
-    cond: IdentifierExprAST,
-    block_if: BlockExprAST,
-    block_else: Option<BlockExprAST>
 }
 
 impl ASTNode for IfElseExprAST {
@@ -234,12 +398,6 @@ impl ASTNode for IfElseExprAST {
 
         Ok(Self { cond: cond, block_if: block_if, block_else: block_else })
     }
-}
-
-#[derive(Debug)]
-pub struct FuncPrototypeExprAST {
-    name: IdentifierExprAST,
-    args: Vec<IdentifierExprAST>
 }
 
 impl ASTNode for FuncPrototypeExprAST {
@@ -264,24 +422,12 @@ impl ASTNode for FuncPrototypeExprAST {
     }
 }
 
-#[derive(Debug)]
-pub struct FuncDefExprAST {
-    prototype: FuncPrototypeExprAST,
-    body: BlockExprAST
-}
-
 impl ASTNode for FuncDefExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         let prototype = FuncPrototypeExprAST::run_parser(input)?;
         let block = BlockExprAST::run_parser(input)?;
         Ok(Self { prototype: prototype, body: block })
     }
-}
-
-#[derive(Debug)]
-pub enum OutBlockExprAST {
-    Assingment(AssignmentExprAST),
-    FuncDef(FuncDefExprAST)
 }
 
 impl ASTNode for OutBlockExprAST {
@@ -291,16 +437,10 @@ impl ASTNode for OutBlockExprAST {
         } else if let Ok(def) = FuncDefExprAST::run_parser(input) {
             Ok(Self::FuncDef(def))
         } else {
-            let token = input.peek(1);
-            let err = format!("Expected assignment or func definition. Got {:?}", token.first());
+            let err = format!("Expected assignment or func definition. Got {:?}", input.peek1());
             Err(ParserError::from(err))
         }
     }
-}
-
-#[derive(Debug)]
-pub struct RootExprAST {
-    items: Vec<OutBlockExprAST>
 }
 
 impl ASTNode for RootExprAST {

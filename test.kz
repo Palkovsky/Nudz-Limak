@@ -6,12 +6,14 @@ def fib(x) {
     1
     let n = xd
     if y {
-       37.21
+       37.21 + 2 - 1
     }
   } else {
     fib(x)
   }
 }
 
+
 # This expression will compute the 40th number.
-let y = fib(40)
+let p = 21
+let y = fib(p+1) + fib(p-1)

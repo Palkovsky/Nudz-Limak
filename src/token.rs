@@ -7,13 +7,25 @@ use lexer::{
 
 use std::{fmt, str, error};
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum BinOp {
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinOpMath {
     ADD,
     SUB,
     MUL,
     DIV,
     MOD,
+    BIT_AND,
+    BIT_OR
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinOpLogic {
+    AND,
+    OR,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinOpCmp {
     LT,
     LTE,
     GT,
@@ -36,7 +48,9 @@ pub enum Token {
     BLOCK_CL,
     COMMA,
     IDENT(String),
-    BIN_OP(BinOp),
+    BIN_OP_MATH(BinOpMath),
+    BIN_OP_LOGIC(BinOpLogic),
+    BIN_OP_CMP(BinOpCmp),
     NUM(f64)
 }
 
@@ -91,7 +105,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         }
     });
 
-    // Special symbols
+    // Special single-char symbols
     ts.rule(&|chunk, _| {
         match chunk.as_str() {
             "="  => LexStatus::Token(Token::ASSIGNMENT),
@@ -100,16 +114,16 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             "{"  => LexStatus::Token(Token::BLOCK_OP),
             "}"  => LexStatus::Token(Token::BLOCK_CL),
             ","  => LexStatus::Token(Token::COMMA),
-            "+"  => LexStatus::Token(Token::BIN_OP(BinOp::ADD)),
-            "-"  => LexStatus::Token(Token::BIN_OP(BinOp::SUB)),
-            "*"  => LexStatus::Token(Token::BIN_OP(BinOp::MUL)),
-            "/"  => LexStatus::Token(Token::BIN_OP(BinOp::DIV)),
-            "%"  => LexStatus::Token(Token::BIN_OP(BinOp::MOD)),
+            "+"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::ADD)),
+            "-"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::SUB)),
+            "*"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MUL)),
+            "/"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::DIV)),
+            "%"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MOD)),
             _    => LexStatus::Fail
         }
     });
 
-    // >, >=, <, <=, ==
+    // >, >=, <, <=, ==, &&, ||
     ts.rule(&|chunk, eof| {
         let chars = chunk
             .chars()
@@ -123,15 +137,21 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         let last = *chars.last().unwrap();
 
         match (first, last, chars.len()) {
-            ('<', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::LTE)),
-            ('<', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::LT)),
-            ('>', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::GTE)),
-            ('>', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::GT)),
-            ('=', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::EQ)),
+            ('<', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::LTE)),
+            ('<', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_CMP(BinOpCmp::LT)),
+            ('>', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::GTE)),
+            ('>', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_CMP(BinOpCmp::GT)),
+            ('=', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::EQ)),
+            ('|', '|', 2) => LexStatus::Token(Token::BIN_OP_LOGIC(BinOpLogic::OR)),
+            ('|', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_OR)),
+            ('&', '&', 2) => LexStatus::Token(Token::BIN_OP_LOGIC(BinOpLogic::AND)),
+            ('&', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_AND)),
             ('=', _, 2)   => LexStatus::Fail,
             ('>', _, 1)   => LexStatus::Request,
             ('<', _, 1)   => LexStatus::Request,
             ('=', _, 1)   => LexStatus::Request,
+            ('&', _, 1)   => LexStatus::Request,
+            ('|', _, 1)   => LexStatus::Request,
             _             => LexStatus::Fail
         }
     });
