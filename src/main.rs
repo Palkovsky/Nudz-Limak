@@ -3,8 +3,7 @@ use token::mk_tokens;
 pub use token::{
     Token,
     TokenzierError,
-    BinOpMath,
-    BinOpCmp
+    BinOp
 };
 
 mod ast;

@@ -8,29 +8,22 @@ use lexer::{
 use std::{fmt, str, error};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum BinOpMath {
+pub enum BinOp {
     ADD,
     SUB,
     MUL,
     DIV,
     MOD,
     BIT_AND,
-    BIT_OR
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum BinOpLogic {
+    BIT_OR,
     AND,
     OR,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum BinOpCmp {
     LT,
     LTE,
     GT,
     GTE,
-    EQ
+    EQ,
+    NON_EQ
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -50,9 +43,7 @@ pub enum Token {
     BLOCK_CL,
     COMMA,
     IDENT(String),
-    BIN_OP_MATH(BinOpMath),
-    BIN_OP_LOGIC(BinOpLogic),
-    BIN_OP_CMP(BinOpCmp),
+    BIN_OP(BinOp),
     NUM(f64)
 }
 
@@ -116,10 +107,10 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             "{"  => LexStatus::Token(Token::BLOCK_OP),
             "}"  => LexStatus::Token(Token::BLOCK_CL),
             ","  => LexStatus::Token(Token::COMMA),
-            "+"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::ADD)),
-            "*"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MUL)),
-            "/"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::DIV)),
-            "%"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MOD)),
+            "+"  => LexStatus::Token(Token::BIN_OP(BinOp::ADD)),
+            "*"  => LexStatus::Token(Token::BIN_OP(BinOp::MUL)),
+            "/"  => LexStatus::Token(Token::BIN_OP(BinOp::DIV)),
+            "%"  => LexStatus::Token(Token::BIN_OP(BinOp::MOD)),
             _    => LexStatus::Fail
         }
     });
@@ -138,17 +129,19 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         let last = *chars.last().unwrap();
 
         match (first, last, chars.len()) {
-            ('<', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::LTE)),
-            ('<', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_CMP(BinOpCmp::LT)),
-            ('>', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::GTE)),
-            ('>', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_CMP(BinOpCmp::GT)),
-            ('=', '=', 2) => LexStatus::Token(Token::BIN_OP_CMP(BinOpCmp::EQ)),
-            ('|', '|', 2) => LexStatus::Token(Token::BIN_OP_LOGIC(BinOpLogic::OR)),
-            ('|', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_OR)),
-            ('&', '&', 2) => LexStatus::Token(Token::BIN_OP_LOGIC(BinOpLogic::AND)),
-            ('&', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_AND)),
+            ('<', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::LTE)),
+            ('<', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::LT)),
+            ('>', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::GTE)),
+            ('>', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::GT)),
+            ('=', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::EQ)),
+            ('|', '|', 2) => LexStatus::Token(Token::BIN_OP(BinOp::OR)),
+            ('|', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::BIT_OR)),
+            ('&', '&', 2) => LexStatus::Token(Token::BIN_OP(BinOp::AND)),
+            ('&', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::BIT_AND)),
             ('-', '>', 2) => LexStatus::Token(Token::ARROW),
-            ('-', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::SUB)),
+            ('-', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::SUB)),
+            ('!', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::NON_EQ)),
+            ('!', _, 2)   => LexStatus::Fail,
             ('=', _, 2)   => LexStatus::Fail,
             ('>', _, 1)   => LexStatus::Request,
             ('<', _, 1)   => LexStatus::Request,
@@ -156,6 +149,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             ('&', _, 1)   => LexStatus::Request,
             ('|', _, 1)   => LexStatus::Request,
             ('-', _, 1)   => LexStatus::Request,
+            ('!', _, 1)   => LexStatus::Request,
             _             => LexStatus::Fail
         }
     });

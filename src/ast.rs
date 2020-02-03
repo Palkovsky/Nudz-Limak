@@ -1,7 +1,6 @@
 use super::{
     Token,
-    BinOpMath,
-    BinOpCmp
+    BinOp
 };
 use lexer::Stream;
 
@@ -37,9 +36,9 @@ pub enum BinOpAtomAST {
 }
 
 #[derive(Debug, Clone)]
-pub struct BinOpMathExprAST {
+pub struct BinOpExprAST {
     lhs: ValuelikeExprAST,
-    op: BinOpMath,
+    op: BinOp,
     rhs: ValuelikeExprAST
 }
 #[derive(Debug, Clone)]
@@ -50,7 +49,7 @@ pub struct ParenExprAST {
 #[derive(Debug, Clone)]
 pub enum ValuelikeExprAST {
     NumericLiteral(NumLiteralExprAST),
-    BinExpression(Box<BinOpMathExprAST>),
+    BinExpression(Box<BinOpExprAST>),
     Identifier(IdentifierExprAST),
     Paren(Box<ParenExprAST>),
     Call(CallExprAST)
@@ -247,21 +246,30 @@ impl ASTNode for BinOpAtomAST {
     }
 }
 
-impl BinOpMathExprAST {
-    fn precedence(op: BinOpMath) -> usize {
+impl BinOpExprAST {
+    fn precedence(op: BinOp) -> usize {
         match op {
-            BinOpMath::MUL     => 100,
-            BinOpMath::DIV     => 100,
-            BinOpMath::MOD     => 100,
-            BinOpMath::ADD     => 90,
-            BinOpMath::SUB     => 90,
-            BinOpMath::BIT_AND => 80,
-            BinOpMath::BIT_OR  => 70
+            BinOp::MUL | BinOp::DIV | BinOp::MOD =>
+                100,
+            BinOp::ADD | BinOp::SUB =>
+                90,
+            BinOp::GT | BinOp::GTE | BinOp::LT | BinOp::LTE =>
+                80,
+            BinOp::EQ | BinOp::NON_EQ =>
+                75,
+            BinOp::BIT_AND =>
+                70,
+            BinOp::BIT_OR  =>
+                60,
+            BinOp::AND =>
+                50,
+            BinOp::OR =>
+                40
         }
     }
 
-    fn mk_tree(atoms: Vec<BinOpAtomAST>, ops: Vec<BinOpMath>) -> Result<Self, ParserError> {
-        let min_precedence = |slice: &[BinOpMath]| {
+    fn mk_tree(atoms: Vec<BinOpAtomAST>, ops: Vec<BinOp>) -> Result<Self, ParserError> {
+        let min_precedence = |slice: &[BinOp]| {
             slice.into_iter()
                 .map(|op| Self::precedence(*op))
                 .fold(10000, |min, x| if min > x { x } else { min })
@@ -314,7 +322,7 @@ impl BinOpMathExprAST {
     }
 }
 
-impl ASTNode for BinOpMathExprAST {
+impl ASTNode for BinOpExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         let mut atoms = Vec::new();
         let mut ops   = Vec::new();
@@ -324,7 +332,7 @@ impl ASTNode for BinOpMathExprAST {
             atoms.push(atom?);
 
             match input.peek1() {
-                Some(Token::BIN_OP_MATH(op)) => {
+                Some(Token::BIN_OP(op)) => {
                     input.next(); // eat token
                     ops.push(op);
                 },
@@ -387,7 +395,7 @@ impl ASTNode for ReturnExprAST {
 
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-         if let Ok(expr) = BinOpMathExprAST::run_parser(input) {
+         if let Ok(expr) = BinOpExprAST::run_parser(input) {
             Ok(Self::BinExpression(Box::new(expr)))
          } else if let Ok(paren) = ParenExprAST::run_parser(input) {
              Ok(Self::Paren(Box::new(paren)))
