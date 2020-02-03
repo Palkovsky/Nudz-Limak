@@ -1,19 +1,18 @@
 # Compute the x'th fibonacci number.
 def fib(x) {
   let y = 21.37
-
-  if x {
-    1
+  return ()
+  if x | 0xFF {
     let n = xd
     if y {
        37.21 + 2 - 1
     }
   } else {
-    fib(x)
+    fib(x*2)
+    return fib(x)
   }
 }
 
-
 # This expression will compute the 40th number.
 let p = 21
-let y = fib(p+1) + fib(p-1)
+let y = fib(p+1) + fib(p-1) * 0xFFFF

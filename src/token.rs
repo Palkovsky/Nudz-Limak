@@ -41,6 +41,8 @@ pub enum Token {
     LET,
     IF,
     ELSE,
+    ARROW,
+    RETURN,
     ASSIGNMENT,
     PAREN_OP,
     PAREN_CL,
@@ -115,7 +117,6 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             "}"  => LexStatus::Token(Token::BLOCK_CL),
             ","  => LexStatus::Token(Token::COMMA),
             "+"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::ADD)),
-            "-"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::SUB)),
             "*"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MUL)),
             "/"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::DIV)),
             "%"  => LexStatus::Token(Token::BIN_OP_MATH(BinOpMath::MOD)),
@@ -123,7 +124,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         }
     });
 
-    // >, >=, <, <=, ==, &&, ||
+    // >, >=, <, <=, ==, &&, ||, ->
     ts.rule(&|chunk, eof| {
         let chars = chunk
             .chars()
@@ -146,12 +147,15 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             ('|', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_OR)),
             ('&', '&', 2) => LexStatus::Token(Token::BIN_OP_LOGIC(BinOpLogic::AND)),
             ('&', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::BIT_AND)),
+            ('-', '>', 2) => LexStatus::Token(Token::ARROW),
+            ('-', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP_MATH(BinOpMath::SUB)),
             ('=', _, 2)   => LexStatus::Fail,
             ('>', _, 1)   => LexStatus::Request,
             ('<', _, 1)   => LexStatus::Request,
             ('=', _, 1)   => LexStatus::Request,
             ('&', _, 1)   => LexStatus::Request,
             ('|', _, 1)   => LexStatus::Request,
+            ('-', _, 1)   => LexStatus::Request,
             _             => LexStatus::Fail
         }
     });
@@ -159,15 +163,71 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
     // Keywords
     ts.rule(&|chunk, _| {
         match chunk.as_str() {
-            "d" | "de" | "def"          => LexStatus::Request,
-            "def "                      => LexStatus::TokenWithDrop(Token::DEF),
-            "l" | "le" | "let"          => LexStatus::Request,
-            "let "                      => LexStatus::TokenWithDrop(Token::LET),
-            "i" | "if"                  => LexStatus::Request,
-            "if " | "if("               => LexStatus::TokenWithDrop(Token::IF),
-            "e" | "el" | "els" | "else" => LexStatus::Request,
-            "else " | "else{"           => LexStatus::TokenWithDrop(Token::ELSE),
-            _                           => LexStatus::Fail
+            "d" | "de" | "def"
+                => LexStatus::Request,
+            "def "
+                => LexStatus::TokenWithDrop(Token::DEF),
+            "l" | "le" | "let"
+                => LexStatus::Request,
+            "let "
+                => LexStatus::TokenWithDrop(Token::LET),
+            "i" | "if"
+                => LexStatus::Request,
+            "if " | "if("
+                => LexStatus::TokenWithDrop(Token::IF),
+            "e" | "el" | "els" | "else"
+                => LexStatus::Request,
+            "else " | "else{"
+                => LexStatus::TokenWithDrop(Token::ELSE),
+            "r" | "re" | "ret" | "retu" | "retur" | "return"
+                => LexStatus::Request,
+            "return "
+                => LexStatus::TokenWithDrop(Token::RETURN),
+            _
+                => LexStatus::Fail
+        }
+    });
+
+    // Hex numeric
+    ts.rule(&|chunk, eof| {
+        let chars = chunk
+            .chars()
+            .collect::<Vec<char>>();
+
+        if chars.len() == 0 {
+            return LexStatus::Fail;
+        }
+
+        let f = chars.first().unwrap();
+        let l = chars.last().unwrap();
+        match (f, l, chars.len(), eof) {
+            ('0', '0', 1, false) | ('0', 'x', 2, false) =>
+                LexStatus::Request,
+            ('0', '0', 1, true) | ('0', 'x', 2, true) =>
+                LexStatus::Fail,
+            ('0', x, cnt, false) if cnt > 2 && x.is_ascii_hexdigit() =>
+                LexStatus::Request,
+            ('0', x, cnt, true) if cnt > 2 && x.is_ascii_hexdigit() => {
+                let cand = &chars[2..].iter().collect::<String>();
+                if let Ok(num) = u64::from_str_radix(cand.as_str(), 16) {
+                    LexStatus::Token(Token::NUM(num as f64))
+                } else {
+                    LexStatus::Fail
+                }
+            },
+            // Fail if some identifier-like character
+            ('0', x, cnt, _) if cnt > 2 && x.is_ascii_alphabetic() =>
+                LexStatus::Fail,
+            ('0', _, cnt, _) if cnt > 2 => {
+                let cand = &chars[2..chars.len()-1].iter().collect::<String>();
+                if let Ok(num) = u64::from_str_radix(cand, 16) {
+                    LexStatus::TokenWithDrop(Token::NUM(num as f64))
+                } else {
+                    LexStatus::Fail
+                }
+            },
+            _ =>
+                LexStatus::Fail
         }
     });
 
