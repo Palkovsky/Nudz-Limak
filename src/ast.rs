@@ -29,6 +29,14 @@ pub struct IdentifierExprAST {
 }
 
 #[derive(Debug, Clone)]
+pub enum BinOpAtomAST {
+    NumericLiteral(NumLiteralExprAST),
+    Identifier(IdentifierExprAST),
+    Paren(Box<ParenExprAST>),
+    Call(CallExprAST)
+}
+
+#[derive(Debug, Clone)]
 pub struct BinOpMathExprAST {
     lhs: ValuelikeExprAST,
     op: BinOpMath,
@@ -40,18 +48,11 @@ pub struct ParenExprAST {
 }
 
 #[derive(Debug, Clone)]
-enum BinOpExprAtom {
-    Literal(NumLiteralExprAST),
-    Identifier(IdentifierExprAST),
-    Call(CallExprAST),
-    Paren(ParenExprAST)
-}
-
-#[derive(Debug, Clone)]
 pub enum ValuelikeExprAST {
     NumericLiteral(NumLiteralExprAST),
     BinExpression(Box<BinOpMathExprAST>),
     Identifier(IdentifierExprAST),
+    Paren(Box<ParenExprAST>),
     Call(CallExprAST)
 }
 
@@ -206,28 +207,36 @@ impl ASTNode for IdentifierExprAST {
     }
 }
 
-impl BinOpExprAtom {
+impl ASTNode for ParenExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        SingleTokenExprAST::expect(Token::PAREN_OP, input)?;
+        let paren_body = ValuelikeExprAST::run_parser(input)?;
+        SingleTokenExprAST::expect(Token::PAREN_CL, input)?;
+        Ok(Self {content: paren_body})
+    }
+}
+
+impl BinOpAtomAST {
     fn valuelike(self) -> ValuelikeExprAST {
         match self {
-            Self::Literal(num)      => ValuelikeExprAST::NumericLiteral(num),
-            Self::Identifier(ident) => ValuelikeExprAST::Identifier(ident),
-            Self::Call(call)        => ValuelikeExprAST::Call(call),
-            Self::Paren(valuelike)  => valuelike.content
+            Self::NumericLiteral(num) =>
+                ValuelikeExprAST::NumericLiteral(num),
+            Self::Identifier(ident) =>
+                ValuelikeExprAST::Identifier(ident),
+            Self::Call(call) =>
+                ValuelikeExprAST::Call(call),
+            Self::Paren(paren) =>
+                paren.content
         }
     }
 }
 
-impl ASTNode for BinOpExprAtom {
+impl ASTNode for BinOpAtomAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if SingleTokenExprAST::expect(Token::PAREN_OP, input).is_ok() {
-            let paren_body = BinOpMathExprAST::parse(input)?;
-            SingleTokenExprAST::expect(Token::PAREN_CL, input)?;
-
-            let valuelike = ValuelikeExprAST::BinExpression(Box::new(paren_body));
-            let expr = ParenExprAST { content: valuelike };
-            Ok(Self::Paren(expr))
+        if let Ok(paren) = ParenExprAST::run_parser(input) {
+            Ok(Self::Paren(Box::new(paren)))
         } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
-            Ok(Self::Literal(num))
+            Ok(Self::NumericLiteral(num))
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
         } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
@@ -251,7 +260,7 @@ impl BinOpMathExprAST {
         }
     }
 
-    fn mk_tree(atoms: Vec<BinOpExprAtom>, ops: Vec<BinOpMath>) -> Result<Self, ParserError> {
+    fn mk_tree(atoms: Vec<BinOpAtomAST>, ops: Vec<BinOpMath>) -> Result<Self, ParserError> {
         let min_precedence = |slice: &[BinOpMath]| {
             slice.into_iter()
                 .map(|op| Self::precedence(*op))
@@ -311,7 +320,7 @@ impl ASTNode for BinOpMathExprAST {
         let mut ops   = Vec::new();
 
         loop {
-            let atom = BinOpExprAtom::run_parser(input);
+            let atom = BinOpAtomAST::run_parser(input);
             atoms.push(atom?);
 
             match input.peek1() {
@@ -378,9 +387,11 @@ impl ASTNode for ReturnExprAST {
 
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(expr) = BinOpMathExprAST::run_parser(input) {
+         if let Ok(expr) = BinOpMathExprAST::run_parser(input) {
             Ok(Self::BinExpression(Box::new(expr)))
-        } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
+         } else if let Ok(paren) = ParenExprAST::run_parser(input) {
+             Ok(Self::Paren(Box::new(paren)))
+         } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
             Ok(Self::NumericLiteral(num))
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
