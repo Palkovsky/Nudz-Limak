@@ -9,7 +9,7 @@ use std::{error, fmt};
 
 #[derive(Debug, Clone)]
 pub struct ParserError {
-    text: String
+    pub text: String
 }
 
 #[derive(Debug, Clone)]
@@ -20,24 +20,24 @@ pub struct VoidTypeExprAST;
 
 #[derive(Debug, Clone)]
 pub struct NumLiteralExprAST {
-    value: f64
+    pub value: f64
 }
 
 #[derive(Debug, Clone)]
 pub struct IdentifierExprAST {
-    name: String
+    pub name: String
 }
 
 #[derive(Debug, Clone)]
 pub struct UnaryOpExprAST {
-    op: UnaryOp,
-    expr: ValuelikeExprAST
+    pub op: UnaryOp,
+    pub expr: ValuelikeExprAST
 }
 
 #[derive(Debug, Clone)]
 pub enum BinOpAtomAST {
     NumericLiteral(NumLiteralExprAST),
-    Identifier(IdentifierExprAST),
+    Variable(IdentifierExprAST),
     Paren(Box<ParenExprAST>),
     Unary(UnaryOpExprAST),
     Call(CallExprAST)
@@ -52,7 +52,7 @@ pub struct BinOpExprAST {
 
 #[derive(Debug, Clone)]
 pub struct ParenExprAST {
-    body: ValuelikeExprAST
+    pub body: ValuelikeExprAST
 }
 
 #[derive(Debug, Clone)]
@@ -60,14 +60,14 @@ pub enum ValuelikeExprAST {
     NumericLiteral(NumLiteralExprAST),
     BinExpression(Box<BinOpExprAST>),
     UnaryExpression(Box<UnaryOpExprAST>),
-    Identifier(IdentifierExprAST),
+    Variable(IdentifierExprAST),
     Call(CallExprAST)
 }
 
 #[derive(Debug, Clone)]
 pub struct CallExprAST {
-    name: IdentifierExprAST,
-    args: Vec<ValuelikeExprAST>
+    pub name: IdentifierExprAST,
+    pub args: Vec<ValuelikeExprAST>
 }
 
 #[derive(Debug, Clone)]
@@ -247,8 +247,8 @@ impl BinOpAtomAST {
         match self {
             Self::NumericLiteral(num) =>
                 ValuelikeExprAST::NumericLiteral(num),
-            Self::Identifier(ident) =>
-                ValuelikeExprAST::Identifier(ident),
+            Self::Variable(ident) =>
+                ValuelikeExprAST::Variable(ident),
             Self::Call(call) =>
                 ValuelikeExprAST::Call(call),
             Self::Paren(paren) =>
@@ -270,7 +270,7 @@ impl ASTNode for BinOpAtomAST {
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
         } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
-            Ok(Self::Identifier(ident))
+            Ok(Self::Variable(ident))
         } else {
             Err(ParserError::from(format!("Expected bin op atom. Got {:?}", input.peek1())))
         }
@@ -437,7 +437,7 @@ impl ASTNode for ValuelikeExprAST {
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
         } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
-            Ok(Self::Identifier(ident))
+            Ok(Self::Variable(ident))
         } else {
             Err(ParserError::from(format!("Expected valuelike. Got {:?}", input.peek1())))
         }

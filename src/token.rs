@@ -30,7 +30,7 @@ pub enum BinOp {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
-    NEG,
+    NOT,
     MINUS
 }
 
@@ -150,7 +150,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             ('-', '>', 2) => LexStatus::Token(Token::ARROW),
             ('-', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::SUB)),
             ('!', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::NON_EQ)),
-            ('!', _, 2)   => LexStatus::TokenWithDrop(Token::UNARY_OP(UnaryOp::NEG)),
+            ('!', _, 2)   => LexStatus::TokenWithDrop(Token::UNARY_OP(UnaryOp::NOT)),
             ('>', _, 1)   => LexStatus::Request,
             ('<', _, 1)   => LexStatus::Request,
             ('=', _, 1)   => LexStatus::Request,

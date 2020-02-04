@@ -2,7 +2,7 @@
 def fib(x) {
   let y = 21.37
   return ()
-  if -(x | 0xFF) {
+  if (x | 0xFF) {
     let n = xd
     if y {
        !(37.21 + 2 - 1)
