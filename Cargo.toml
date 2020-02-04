@@ -5,6 +5,8 @@ authors = ["Palkovsky <dawidmacek42@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+llvm-alt="0.5.0"
 
 [dependencies.lexer]
 path = "./lexer"
+
