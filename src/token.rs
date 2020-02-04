@@ -26,6 +26,12 @@ pub enum BinOp {
     NON_EQ
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum UnaryOp {
+    NEG,
+    MINUS
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     EOF,
@@ -44,6 +50,7 @@ pub enum Token {
     COMMA,
     IDENT(String),
     BIN_OP(BinOp),
+    UNARY_OP(UnaryOp),
     NUM(f64)
 }
 
@@ -101,7 +108,6 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
     // Special single-char symbols
     ts.rule(&|chunk, _| {
         match chunk.as_str() {
-            "="  => LexStatus::Token(Token::ASSIGNMENT),
             "("  => LexStatus::Token(Token::PAREN_OP),
             ")"  => LexStatus::Token(Token::PAREN_CL),
             "{"  => LexStatus::Token(Token::BLOCK_OP),
@@ -115,13 +121,13 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         }
     });
 
-    // >, >=, <, <=, ==, &&, ||, ->
+    // >, >=, <, <=, ==, &&, ||, ->, -, !
     ts.rule(&|chunk, eof| {
         let chars = chunk
             .chars()
             .collect::<Vec<char>>();
 
-        if chars.len() == 0 || eof{
+        if chars.len() == 0 || (chars.len() == 1 && eof) {
             return LexStatus::Fail;
         }
 
@@ -134,6 +140,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             ('>', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::GTE)),
             ('>', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::GT)),
             ('=', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::EQ)),
+            ('=', _, 2)   => LexStatus::Token(Token::ASSIGNMENT),
             ('|', '|', 2) => LexStatus::Token(Token::BIN_OP(BinOp::OR)),
             ('|', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::BIT_OR)),
             ('&', '&', 2) => LexStatus::Token(Token::BIN_OP(BinOp::AND)),
@@ -141,8 +148,7 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             ('-', '>', 2) => LexStatus::Token(Token::ARROW),
             ('-', _, 2)   => LexStatus::TokenWithDrop(Token::BIN_OP(BinOp::SUB)),
             ('!', '=', 2) => LexStatus::Token(Token::BIN_OP(BinOp::NON_EQ)),
-            ('!', _, 2)   => LexStatus::Fail,
-            ('=', _, 2)   => LexStatus::Fail,
+            ('!', _, 2)   => LexStatus::TokenWithDrop(Token::UNARY_OP(UnaryOp::NEG)),
             ('>', _, 1)   => LexStatus::Request,
             ('<', _, 1)   => LexStatus::Request,
             ('=', _, 1)   => LexStatus::Request,

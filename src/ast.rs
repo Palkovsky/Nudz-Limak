@@ -1,6 +1,7 @@
 use super::{
     Token,
-    BinOp
+    BinOp,
+    UnaryOp
 };
 use lexer::Stream;
 
@@ -28,10 +29,17 @@ pub struct IdentifierExprAST {
 }
 
 #[derive(Debug, Clone)]
+pub struct UnaryOpExprAST {
+    op: UnaryOp,
+    expr: ValuelikeExprAST
+}
+
+#[derive(Debug, Clone)]
 pub enum BinOpAtomAST {
     NumericLiteral(NumLiteralExprAST),
     Identifier(IdentifierExprAST),
     Paren(Box<ParenExprAST>),
+    Unary(UnaryOpExprAST),
     Call(CallExprAST)
 }
 
@@ -41,17 +49,18 @@ pub struct BinOpExprAST {
     op: BinOp,
     rhs: ValuelikeExprAST
 }
+
 #[derive(Debug, Clone)]
 pub struct ParenExprAST {
-    content: ValuelikeExprAST
+    body: ValuelikeExprAST
 }
 
 #[derive(Debug, Clone)]
 pub enum ValuelikeExprAST {
     NumericLiteral(NumLiteralExprAST),
     BinExpression(Box<BinOpExprAST>),
+    UnaryExpression(Box<UnaryOpExprAST>),
     Identifier(IdentifierExprAST),
-    Paren(Box<ParenExprAST>),
     Call(CallExprAST)
 }
 
@@ -206,12 +215,28 @@ impl ASTNode for IdentifierExprAST {
     }
 }
 
+impl ASTNode for UnaryOpExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        match input.next() {
+            Some(Token::UNARY_OP(op)) => {
+                let expr = BinOpAtomAST::run_parser(input)?;
+                Ok(Self {op: op, expr: expr.valuelike()})
+            },
+            Some(Token::BIN_OP(BinOp::SUB)) => {
+                let expr = BinOpAtomAST::run_parser(input)?;
+                Ok(Self {op: UnaryOp::MINUS, expr: expr.valuelike()})
+            },
+            _ => Err(ParserError::from("Expected valuelike."))
+        }
+    }
+}
+
 impl ASTNode for ParenExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         SingleTokenExprAST::expect(Token::PAREN_OP, input)?;
         let paren_body = ValuelikeExprAST::run_parser(input)?;
         SingleTokenExprAST::expect(Token::PAREN_CL, input)?;
-        Ok(Self {content: paren_body})
+        Ok(Self {body: paren_body})
     }
 }
 
@@ -225,14 +250,18 @@ impl BinOpAtomAST {
             Self::Call(call) =>
                 ValuelikeExprAST::Call(call),
             Self::Paren(paren) =>
-                paren.content
+                paren.body,
+            Self::Unary(unary) =>
+                ValuelikeExprAST::UnaryExpression(Box::new(unary))
         }
     }
 }
 
 impl ASTNode for BinOpAtomAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(paren) = ParenExprAST::run_parser(input) {
+        if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
+            Ok(Self::Unary(unary))
+        } else if let Ok(paren) = ParenExprAST::run_parser(input) {
             Ok(Self::Paren(Box::new(paren)))
         } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
             Ok(Self::NumericLiteral(num))
@@ -268,13 +297,13 @@ impl BinOpExprAST {
         }
     }
 
-    fn mk_tree(atoms: Vec<BinOpAtomAST>, ops: Vec<BinOp>) -> Result<Self, ParserError> {
-        let min_precedence = |slice: &[BinOp]| {
-            slice.into_iter()
-                .map(|op| Self::precedence(*op))
-                .fold(10000, |min, x| if min > x { x } else { min })
-        };
+    fn min_precedence(slice: &[BinOp]) -> usize {
+        slice.into_iter()
+            .map(|op| Self::precedence(*op))
+            .fold(std::usize::MAX, |min, x| if min > x { x } else { min })
+    }
 
+    fn mk_tree(atoms: Vec<BinOpAtomAST>, ops: Vec<BinOp>) -> Result<Self, ParserError> {
         if atoms.len() == 2 && ops.len() == 1 {
             let l = atoms.first().unwrap().clone();
             let r = atoms.last().unwrap().clone();
@@ -288,7 +317,7 @@ impl BinOpExprAST {
             let op = *ops.get(split).unwrap();
             let rest = &ops[(split+1)..];
 
-            if min_precedence(rest) < Self::precedence(op) {
+            if Self::min_precedence(rest) < Self::precedence(op) {
                 split += 1;
             } else {
                 let l_ops = &ops[..split];
@@ -395,11 +424,13 @@ impl ASTNode for ReturnExprAST {
 
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-         if let Ok(expr) = BinOpExprAST::run_parser(input) {
+        if let Ok(expr) = BinOpExprAST::run_parser(input) {
             Ok(Self::BinExpression(Box::new(expr)))
-         } else if let Ok(paren) = ParenExprAST::run_parser(input) {
-             Ok(Self::Paren(Box::new(paren)))
-         } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
+        } else if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
+            Ok(Self::UnaryExpression(Box::new(unary)))
+        } else if let Ok(paren) = ParenExprAST::run_parser(input) {
+             Ok(paren.body)
+        } else if let Ok(num) = NumLiteralExprAST::run_parser(input) {
             Ok(Self::NumericLiteral(num))
         } else if let Ok(ident) = CallExprAST::run_parser(input) {
             Ok(Self::Call(ident))
