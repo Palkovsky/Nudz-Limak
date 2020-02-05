@@ -45,9 +45,9 @@ pub enum BinOpAtomAST {
 
 #[derive(Debug, Clone)]
 pub struct BinOpExprAST {
-    lhs: ValuelikeExprAST,
-    op: BinOp,
-    rhs: ValuelikeExprAST
+    pub lhs: ValuelikeExprAST,
+    pub op: BinOp,
+    pub rhs: ValuelikeExprAST
 }
 
 #[derive(Debug, Clone)]
