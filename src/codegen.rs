@@ -5,13 +5,15 @@ use super::token::*;
 
 use std::process::Command;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 // llvm-rs docs:
 // https://tombebbington.github.io/llvm-rs/llvm/index.html
 use llvm::{
     CSemiBox,
     BasicBlock,
-    Value, GlobalValue, GlobalVariable,
+    Value,
     Function,
     Compile,
     Sub
@@ -19,19 +21,164 @@ use llvm::{
 
 const MOD_NAME: &'static str = "llvm-tut";
 
+type RcBox<T> = Rc<Box<T>>;
+type RcRef<T> = Rc<RefCell<T>>;
+
+/*
+ * Nasty stuff
+ */
 fn mk_box<T>(value: &T) -> Box<T> {
     let ptr = (value as *const T) as usize;
     unsafe { Box::from_raw(ptr as *mut T) }
 }
 
-fn mk_slice<T>(vec: &Vec<Box<T>>) -> Vec<&T> {
+fn mk_rcbox<T>(value: &T) -> RcBox<T> {
+    let boxed = mk_box(value);
+    Rc::new(boxed)
+}
+
+fn mk_rcref<T>(value: T) -> RcRef<T> {
+    Rc::new(RefCell::new(value))
+}
+
+fn mk_slice<T>(vec: &Vec<RcBox<T>>) -> Vec<&T> {
     unsafe {
         let ptrs = vec
             .iter()
-            .map(|item| item.as_ref() as *const T)
+            .map(|item| item.as_ref().as_ref() as *const T)
             .map(|ptr| ptr.as_ref().unwrap())
             .collect::<Vec<&T>>();
         ptrs
+    }
+}
+
+struct FuncMeta {
+    func:     RcBox<Function>,
+    blocks:   HashMap<String, RcBox<BasicBlock>>,
+    argnames: Vec<String>,
+    argptrs:  Vec<RcBox<Value>>,
+    preamb:   Option<RcBox<BasicBlock>>,
+    drop:     Option<RcBox<BasicBlock>>,
+    retval:   Option<RcBox<Value>>
+}
+
+impl FuncMeta {
+    fn new<'r>(ctx: &mut Context<'r>, name: impl AsRef<str>, argnames: Vec<String>, ty: &llvm::FunctionType) -> Self {
+        let funcname = name.as_ref();
+        let func = ctx.llvm_module.add_function(funcname, ty);
+        let arity = argnames.len();
+
+        Self {
+            func: mk_rcbox(func),
+            blocks: HashMap::new(),
+            argnames: argnames,
+            argptrs: Vec::with_capacity(arity),
+            preamb: None,
+            drop: None,
+            retval: None
+        }
+    }
+
+    fn block(&self, blkname: impl AsRef<str>) -> Option<RcBox<BasicBlock>> {
+        self.blocks.get(blkname.as_ref())
+            .map(|r| r.clone())
+    }
+
+    fn mk_named_block(&mut self, blkname: impl Into<String>) -> RcBox<BasicBlock> {
+        let blkname = blkname.into();
+        let block = mk_rcbox(self.func.append(blkname.clone().as_str()));
+
+        let insert = self.blocks.insert(blkname.clone(), block.clone());
+        if insert.is_some() {
+            panic!("Duplicated block '{}' in function '{}'.", blkname.clone(), self.name());
+        }
+
+        self.block(blkname).unwrap()
+    }
+
+    fn mk_preamb<'r>(&mut self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
+        let preamb_ident = format!("{}_preamb", self.name());
+        let preamb_block = self.mk_named_block(preamb_ident.clone());
+        ctx.llvm_builder.position_at_end(&preamb_block);
+
+        let func = self.func.clone();
+        let signature = func.get_signature();
+        let arity = signature.num_params();
+        let arg_types = signature.get_params();
+        let ret_type = signature.get_return();
+
+        // Allocate memory for arguments
+        (0..arity)
+            .zip(arg_types.into_iter())
+            .zip(self.argnames.clone().iter())
+            .for_each(|((i, ty), argname): ((usize, &llvm::Type), &String)| {
+                let argvalue = &self.func[i];
+                let alloca = ctx.mk_local_var(argname,
+                                             ty,
+                                             Some(mk_rcbox(argvalue)));
+                self.argptrs.push(alloca.clone());
+            });
+
+        // Allocate memory for return value
+        self.retval = if ret_type.is_void() {
+            None
+        } else {
+            let ret_alloca = ctx.llvm_builder.build_alloca(ret_type);
+            Some(mk_rcbox(ret_alloca))
+        };
+
+        // Update structure field
+        self.preamb = Some(preamb_block);
+        // Return reference to newly created block
+        self.block(preamb_ident.clone()).unwrap()
+    }
+
+    fn mk_drop<'r>(&mut self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
+        let drop_ident = format!("{}_drop", self.name());
+        let drop_block = self.mk_named_block(drop_ident.clone());
+        ctx.llvm_builder.position_at_end(&drop_block);
+
+        let signature = self.func.get_signature();
+        let ret_type = signature.get_return();
+
+        // Deallocate and return retval
+        if ret_type.is_void() {
+            ctx.llvm_builder.build_ret_void();
+        } else {
+            let ret_value_addr = self.retval.clone().unwrap();
+            let ret_value = ctx.llvm_builder.build_load(&ret_value_addr);
+            ctx.llvm_builder.build_ret(ret_value);
+        }
+
+        // Update structe field
+        self.drop = Some(drop_block);
+        // Return reference to newly created block
+        self.block(drop_ident.clone()).unwrap()
+    }
+
+    fn set_retval<'r>(&mut self, ctx: &mut Context<'r>, value: RcBox<Value>) {
+        if let Some(ptr) = &self.retval {
+            ctx.llvm_builder.build_store(&value, &ptr);
+        } else {
+            panic!("set_retval(): Tried setting retval in function '{}' without prioir allocation.", self.name());
+        }
+    }
+
+    fn name(&self) -> String {
+        let name = self.func.get_name();
+        String::from(name)
+    }
+
+    fn gen_blk_ident(&self) -> String {
+        // Count how many blocks generated for parent function
+        let mut blocks_cnt = self.blocks.len();
+
+        // Don't take preambule and drop into account when calculating identifier.
+        if self.preamb.is_some() { blocks_cnt -= 1; }
+        if self.drop.is_some() { blocks_cnt -= 1; }
+
+        // Name of parent function and number of blocks generated will be new block identifier
+        format!("{}_{}", self.name(), blocks_cnt)
     }
 }
 
@@ -40,17 +187,14 @@ struct Context<'r> {
     llvm_module: CSemiBox<'r, llvm::Module>,
     llvm_builder: CSemiBox<'r, llvm::Builder>,
 
-    funcs: HashMap<String, Box<Function>>,
-    blocks: HashMap<String, HashMap<String, Box<BasicBlock>>>,
+    funcs: HashMap<String, RcRef<FuncMeta>>,
+    parent_func: Option<RcRef<FuncMeta>>,
 
-    ret_block: Option<String>,
-    exit_block: Option<String>,
-    parent_func_name: Option<String>,
-    parent_block_name: Option<String>,
+    exit_block: Option<RcBox<BasicBlock>>,
+    parent_block: Option<RcBox<BasicBlock>>,
 
-    glob_vars: HashMap<String, Box<Value>>,
-    local_vars: HashMap<String, Box<Value>>,
-    retval: Option<Box<Value>>
+    glob_vars: HashMap<String, RcBox<Value>>,
+    local_vars: HashMap<String, RcBox<Value>>,
 }
 
 impl<'r> Context<'r> {
@@ -63,132 +207,50 @@ impl<'r> Context<'r> {
             llvm_builder: builder,
 
             funcs: HashMap::new(),
-            blocks: HashMap::new(),
+            parent_func: None,
 
-            ret_block: None,
             exit_block: None,
-            parent_func_name: None,
-            parent_block_name: None,
+            parent_block: None,
 
             glob_vars: HashMap::new(),
             local_vars: HashMap::new(),
-            retval: None
         }
     }
 
-    fn variable(&self, name: impl Into<String>) -> Option<Box<Value>> {
+    fn variable(&self, name: impl Into<String>) -> Option<RcBox<Value>> {
         let ref key = name.into();
+
         let global = self.llvm_module.get_global(key)
             .map(|glob| glob.to_super())
-            .map(|ptr| mk_box(self.llvm_builder.build_load(ptr)));
+            .map(|ptr| mk_rcbox(self.llvm_builder.build_load(ptr)));
 
         let local = self.local_vars.get(key)
-            .map(|ptr| mk_box(self.llvm_builder.build_load(ptr)));
+            .map(|ptr| mk_rcbox(self.llvm_builder.build_load(ptr)));
 
         // Local variable has higher priority
         local.or(global)
     }
 
-    fn func(&mut self, name: impl Into<String>) -> Option<Box<Function>> {
+    fn func(&mut self, name: impl Into<String>) -> Option<RcRef<FuncMeta>> {
         let ref varname = name.into();
         self.funcs.get_mut(varname)
-            .map(|f| mk_box(f.as_ref()))
+            .map(|f| Rc::clone(f))
     }
 
-    fn block(&mut self, funcname: impl Into<String>, blkname: impl Into<String>) -> Option<Box<BasicBlock>> {
-        self.blocks.get(&funcname.into())
-            .and_then(|blocks| blocks.get(&blkname.into()))
-            .map(|block| mk_box(block.as_ref()))
+    fn mk_func(&mut self, name: impl Into<String>, argnames: Vec<String>, ty: &llvm::FunctionType) -> RcRef<FuncMeta> {
+        let funcname = name.into();
+        let funcmeta = FuncMeta::new(self, funcname.clone(), argnames, ty);
+
+        let funcmeta_rcref = mk_rcref(funcmeta);
+        self.funcs.insert(funcname.clone(), funcmeta_rcref.clone());
+        funcmeta_rcref
     }
 
-    fn parent_func(&mut self) -> Option<Box<Function>> {
-        let parent = self.parent_func_name.clone();
-        parent.and_then(|key| self.func(key))
-    }
-
-    fn parent_block(&mut self) -> Option<Box<BasicBlock>> {
-        let parent_func = self.parent_func_name.clone()?;
-        let parent_block = self.parent_block_name.clone()?;
-        self.block(parent_func, parent_block)
-    }
-
-    fn mk_func(&mut self, name: impl AsRef<str>, ty: &llvm::Type) -> Box<Function> {
-        let funcname = name.as_ref();
-        let func = mk_box(self.llvm_module.add_function(funcname, ty));
-
-        self.funcs.insert(String::from(funcname), func);
-        self.blocks.insert(String::from(funcname), HashMap::new());
-
-        self.func(funcname).unwrap()
-    }
-
-    fn mk_block(&mut self, funcname: impl Into<String>, blkname: impl Into<String>) -> Box<BasicBlock> {
-        let funcname = funcname.into();
-        let blkname = blkname.into();
-
-        match self.func(funcname.clone()) {
-            Some(func) => {
-                let block = func.append(blkname.clone().as_str());
-
-                let ref mut blocks = self.blocks.get_mut(&funcname)
-                    .unwrap_or_else(|| panic!("mk_block: Unable to find blocks map for function '{}'.", funcname.clone()));
-
-                if blocks.insert(blkname.clone(), mk_box(block)).is_some() {
-                    panic!("Duplicated block '{}' in function '{}'.",
-                           blkname.clone(), funcname.clone())
-                }
-
-                self.llvm_builder.position_at_end(block);
-                mk_box(block)
-            },
-            None => {
-                panic!("mk_block: Block '{}' creation failed. Unexistend function '{}'.",
-                       funcname.clone(), blkname.clone())
-            }
-        }
-    }
-
-    fn mk_retval(&mut self, ty: &llvm::Type) -> Box<Value> {
-        let alloca = self.llvm_builder.build_alloca(ty);
-        self.retval = Some(mk_box(alloca));
-        mk_box(alloca)
-    }
-
-    fn set_retval(&mut self, val: Box<Value>) -> Box<Value> {
-        if let Some(ret) = &self.retval {
-            self.llvm_builder.build_store(val.as_ref(), ret.as_ref());
-            val
-        } else {
-            panic!("set_retval: Tried setting rerval without prior allocation.");
-        }
-    }
-
-    fn drop_retval(&mut self) {
-        self.retval = None;
-    }
-
-    fn drop_retval_llvm(&mut self) {
-        if let Some(ret) = &self.retval {
-            self.llvm_builder.build_free(ret.as_ref());
-        } else {
-            panic!("drop_retval: Tried dropping retval without prior allocation.");
-        }
-    }
-
-    fn read_retval(&mut self) -> Box<Value> {
-        if let Some(ret) = &self.retval {
-            let value = self.llvm_builder.build_load(ret.as_ref());
-            mk_box(value)
-        } else {
-            panic!("read_retval: Tried reading retval without prior allocation.");
-        }
-    }
-
-    fn mk_local_var(&mut self, name: impl AsRef<str>, ty: &llvm::Type, def: Option<Box<Value>>) -> Box<Value> {
+    fn mk_local_var(&mut self, name: impl AsRef<str>, ty: &llvm::Type, def: Option<RcBox<Value>>) -> RcBox<Value> {
         let varname = name.as_ref();
         let alloca = self.llvm_builder.build_alloca(ty);
 
-        self.local_vars.insert(varname.to_owned(), mk_box(alloca));
+        self.local_vars.insert(varname.to_owned(), mk_rcbox(alloca));
         if let Some(default) = def {
             self.llvm_builder.build_store(default.as_ref(), alloca);
         }
@@ -196,38 +258,14 @@ impl<'r> Context<'r> {
         self.variable(varname).unwrap()
     }
 
-    fn drop_local_var(&mut self, varname: impl Into<String>) -> Option<Box<Value>> {
-        let varname = varname.into();
-        self.local_vars.remove(&varname)
-    }
-
-    fn drop_local_var_llvm(&mut self, varname: impl Into<String>) -> Option<Box<Value>> {
-        let varname = varname.into();
-        self.local_vars.get(&varname).map(|value| mk_box(value.as_ref()))
-    }
-
-    fn mk_global_var(&mut self, name: impl AsRef<str>, val: Box<Value>) -> Box<Value> {
+    fn mk_global_var(&mut self, name: impl AsRef<str>, val: RcBox<Value>) -> RcBox<Value> {
         let varname = name.as_ref();
 
         let glob = self.llvm_module.add_global_variable(varname, val.as_ref());
         let glob = glob.to_super().to_super();
 
-        self.glob_vars.insert(varname.to_owned(), mk_box(glob));
+        self.glob_vars.insert(varname.to_owned(), mk_rcbox(glob));
         self.variable(varname).unwrap()
-    }
-
-    fn gen_blk_ident(&self) -> String {
-        // Get name of parent function
-        let ref parenfunc = self.parent_func_name.clone()
-            .unwrap_or_else(|| panic!("gen_blk_ident: No parent function."));
-
-        // Count how many blocks generated for parent function
-        let blocks_cnt = self.blocks.get(parenfunc)
-            .unwrap_or_else(|| panic!("gen_blk_ident: No blocks for function '{}'.", parenfunc))
-            .len();
-
-        // Name of parent function and number of blocks generated will be new block identifier
-        format!("{}_{}", parenfunc, blocks_cnt)
     }
 }
 
@@ -235,10 +273,10 @@ trait Codegen<'r, T> {
     fn gencode(&self, ctx: &mut Context<'r>) -> T;
 }
 
-impl<'r> Codegen<'r, Box<Value>> for NumLiteralExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<Value> {
+impl<'r> Codegen<'r, RcBox<Value>> for NumLiteralExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         let num = self.value.compile(ctx.llvm_ctx);
-        mk_box(num)
+        mk_rcbox(num)
     }
 }
 
@@ -253,8 +291,8 @@ fn num_literal_expr_test() {
     assert!(false);
 }
 
-impl<'r> Codegen<'r, Box<Value>> for ValuelikeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<Value> {
+impl<'r> Codegen<'r, RcBox<Value>> for ValuelikeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         match self {
             ValuelikeExprAST::NumericLiteral(num) =>
                 num.gencode(ctx),
@@ -268,23 +306,22 @@ impl<'r> Codegen<'r, Box<Value>> for ValuelikeExprAST {
             },
             ValuelikeExprAST::Call(call) => {
                 let ref name = call.name.name;
-                let func = {
+                let funcmeta = {
                     let f = ctx.func(name);
                     if f.is_none() {
                         panic!(" Function '{}' is undefined.", name);
                     }
-                    f.unwrap()
+                    f.unwrap().clone()
                 };
 
                 let ref args = call.args
                     .iter()
                     .map(|arg| arg.gencode(ctx))
-                    .collect::<Vec<Box<Value>>>();
+                    .collect::<Vec<RcBox<Value>>>();
+
                 let argslice = &mk_slice(args)[..];
-
-                let value = ctx.llvm_builder.build_call(func.as_ref(), argslice);
-                mk_box(value)
-
+                let value = ctx.llvm_builder.build_call(funcmeta.borrow().func.as_ref(), argslice);
+                mk_rcbox(&value)
             },
             ValuelikeExprAST::BinExpression(binexpr) =>
                 binexpr.gencode(ctx),
@@ -294,8 +331,8 @@ impl<'r> Codegen<'r, Box<Value>> for ValuelikeExprAST {
     }
 }
 
-impl<'r> Codegen<'r, Box<Value>> for BinOpExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<Value> {
+impl<'r> Codegen<'r, RcBox<Value>> for BinOpExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         let ref lhs = self.lhs.gencode(ctx);
         let ref rhs = self.rhs.gencode(ctx);
         let ref builder = ctx.llvm_builder;
@@ -329,7 +366,7 @@ impl<'r> Codegen<'r, Box<Value>> for BinOpExprAST {
                 builder.build_cmp(lhs, rhs, llvm::Predicate::NotEqual),
         };
 
-        mk_box(res)
+        mk_rcbox(res)
     }
 }
 
@@ -362,8 +399,8 @@ fn bin_expr_test() {
     assert!(false);
 }
 
-impl<'r> Codegen<'r, Box<Value>> for UnaryOpExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<Value> {
+impl<'r> Codegen<'r, RcBox<Value>> for UnaryOpExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         let value = self.expr.gencode(ctx);
         let ref builder = ctx.llvm_builder;
 
@@ -374,7 +411,7 @@ impl<'r> Codegen<'r, Box<Value>> for UnaryOpExprAST {
                 builder.build_neg(value.as_ref())
         };
 
-        mk_box(value_op)
+        mk_rcbox(value_op)
     }
 }
 
@@ -398,35 +435,43 @@ fn unary_expr_test() {
     assert!(false);
 }
 
-impl<'r> Codegen<'r, Box<BasicBlock>> for BlockExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<BasicBlock> {
-        // Name of parent function and number of blocks generated will be new block identifier
-        let block_ident = ctx.gen_blk_ident();
-        let parenfunc = ctx.parent_func_name.clone().unwrap();
+impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
+        // Get info about parent function.
+        let parenfunc = ctx.parent_func.clone().unwrap();
+        let parenfunc_name = parenfunc.borrow().name();
 
-        // Build block and move builder to the end
-        let block = ctx.mk_block(parenfunc.clone(), block_ident.clone());
-        ctx.llvm_builder.position_at_end(block.as_ref());
+        // Save current parenblock to bring it back after exiting current block.
+        let prev_parenblock = ctx.parent_block.clone();
 
-        // Update parent block name
-        let prev_parent_block = ctx.parent_block_name.clone();
-        ctx.parent_block_name = Some(block_ident.clone());
+        // Build block and move builder to the end.
+        let block_ident = parenfunc.borrow().gen_blk_ident();
+        let block = parenfunc.borrow_mut().mk_named_block(block_ident.clone());
+        // Change parent block to newly generated one.
+        ctx.parent_block = Some(Rc::clone(&block));
+        ctx.llvm_builder.position_at_end(&block);
 
+        // Generate body of current block
         for expr in &self.body {
             expr.gencode(ctx);
         }
 
-        // If no return, then go back to exitblk
-        if let Some(InBlockExprAST::Return(_)) = self.body.last() {
-            // ...
-        } else if let Some(blk) = ctx.exit_block.clone() {
-            let exitblk = ctx.block(parenfunc.clone(), blk).unwrap();
-            ctx.llvm_builder.build_br(exitblk.as_ref());
+        // Make sure block is terminated.
+        match (self.body.last(), ctx.exit_block.clone()) {
+            // When generated block has return at the end.
+            (Some(InBlockExprAST::Return(_)), _) => {},
+            // When there's no terminator, branch unconditionaly to the exit block.
+            (_, Some(exitblk)) => {
+                ctx.llvm_builder.build_br(exitblk.as_ref());
+            },
+            // When not terminated with return and no exit block specified, we got a dangling block.
+            _ => {
+                panic!("Unable to perform block termination for '{}' in '{}'.", block_ident, parenfunc_name)
+            }
         }
 
-        // Revert to previus block name
-        ctx.parent_block_name = prev_parent_block;
-
+        // Revert to previus parent block
+        ctx.parent_block = prev_parenblock;
         block
     }
 }
@@ -447,72 +492,77 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
 
             InBlockExprAST::If(iff) => {
                 // Create exit block for if branches
-                let funcname = ctx.parent_func_name.clone().unwrap();
-                let startblk = ctx.parent_block().unwrap();
+                let parenfunc = ctx.parent_func.clone()
+                    .unwrap_or_else(|| panic!("If without parent function."));
 
-                let new_exitblk_name = ctx.gen_blk_ident();
-                let exitblk = ctx.mk_block(funcname, new_exitblk_name.clone());
+                let startblk = ctx.parent_block.clone().unwrap();
+
+                let new_exitblk_name = parenfunc.borrow().gen_blk_ident();
+                let new_exitblk = parenfunc.borrow_mut().mk_named_block(new_exitblk_name.clone());
 
                 // Generate first branch
-                ctx.exit_block = Some(new_exitblk_name.clone());
+                ctx.exit_block = Some(Rc::clone(&new_exitblk));
                 let b1 = iff.block_if.gencode(ctx);
 
+                // If there's a second branch specified, generate it.
+                // Otherwise branch out to the exitblock.
                 let b2 = if let Some(blk) = iff.block_else.clone() {
-                    ctx.exit_block = Some(new_exitblk_name.clone());
+                    ctx.exit_block = Some(Rc::clone(&new_exitblk));
                     blk.gencode(ctx)
                 } else {
-                    mk_box(exitblk.as_ref())
+                    Rc::clone(&new_exitblk)
                 };
 
                 // Move back to start block
-                ctx.llvm_builder.position_at_end(startblk.as_ref());
-                // Calculate condition
+                ctx.llvm_builder.position_at_end(&startblk);
+                // Generate code for condition
                 let cond = iff.cond.gencode(ctx);
-                // Build branch
-                ctx.llvm_builder.build_cond_br(cond.as_ref(),
-                                               b1.as_ref(),
-                                               Some(b2.as_ref()));
-                // Move to exitblock
-                ctx.llvm_builder.position_at_end(exitblk.as_ref());
+                // Build conditional branching
+                ctx.llvm_builder.build_cond_br(&cond, &b1, Some(&b2));
+                // Move builder to the end of exitblock
+                ctx.llvm_builder.position_at_end(&new_exitblk);
             },
 
             InBlockExprAST::Return(ret) => {
                 // Create return block for current branch.
-                let parenname = ctx.parent_func_name.clone()
+                let parenfunc = ctx.parent_func.clone()
                     .unwrap_or_else(|| panic!("Return without parent function."));
+                let parenfunc_name = parenfunc.borrow().name();
 
-                // Block termination
+                // Setting return value
                 if let Some(valuelike) = &ret.ret {
                     let ret_value = valuelike.gencode(ctx);
-                    if ctx.retval.is_some() {
-                        ctx.set_retval(ret_value);
-                    } else {
-                        panic!("retun in '{}', which is void function!", parenname);
-                    }
+                    parenfunc.borrow_mut().set_retval(ctx, ret_value);
                 }
 
-                let endblk_name = ctx.ret_block.clone().unwrap();
-                let endblk = ctx.block(parenname.clone(), endblk_name).unwrap();
-                ctx.llvm_builder.build_br(endblk.as_ref());
+                // Block termination with unconditional jump to endblock.
+                let endblk = parenfunc.borrow().drop.clone()
+                    .unwrap_or_else(|| panic!("Return couldn't get drop block reference in func '{}'.", parenfunc_name));
+                ctx.llvm_builder.build_br(&endblk);
             },
         };
     }
 }
 
-impl<'r> Codegen<'r, Box<Function>> for FuncDefExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<Function> {
+impl<'r> Codegen<'r, RcRef<FuncMeta>> for FuncDefExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcRef<FuncMeta> {
         let ref prot = self.prototype;
         let ref body = self.body;
 
         let arity = prot.args.len();
         let ref funcname = prot.name.name;
 
-        // Assume f64 args only.
+        // Extract arg names
+        let arg_names = prot.args.iter()
+            .map(|ident| ident.name.clone())
+            .collect::<Vec<String>>();
+
+        // Assume f64 args only
         let arg_types = (0..arity)
             .map(|_| llvm::Type::get::<f64>(ctx.llvm_ctx))
             .collect::<Vec<&llvm::Type>>();
 
-        // Either f64 or void
+        // Either f64 or void as return
         let ret_type = if let Some(_) = &prot.ret_type {
             llvm::Type::get::<f64>(ctx.llvm_ctx)
         } else {
@@ -520,71 +570,29 @@ impl<'r> Codegen<'r, Box<Function>> for FuncDefExprAST {
         };
 
         let sig = llvm::FunctionType::new(ret_type, &arg_types[..]);
-        let func = ctx.mk_func(funcname.clone(), sig.to_super());
 
-        /*
-         * PREAMB
-         */
-        let preamb_blk_name = format!("{}_preamb", funcname.clone());
-        let preamb_blk = ctx.mk_block(funcname.clone(), preamb_blk_name.clone());
-
-        // Allocate memory for arguments
-        for i in 0..arity {
-            let arg = &func[i];
-            let ref name = prot.args.get(i).unwrap().name;
-            ctx.mk_local_var(name,
-                             llvm::Type::get::<f64>(ctx.llvm_ctx),
-                             Some(mk_box(arg)));
-        }
-        // Allocate memory for return
-        if !ret_type.is_void() {
-            ctx.mk_retval(ret_type);
-        }
-
-        /*
-         * DROP CODE
-         */
-        let drop_blk_name = format!("{}_drop", funcname.clone());
-        let drop_blk = ctx.mk_block(funcname.clone(), drop_blk_name.clone());
-
-        // Free memory for arguments
-        ctx.llvm_builder.position_at_end(drop_blk.as_ref());
-        for i in 0..arity {
-            let ref name = prot.args.get(i).unwrap().name;
-            if let Some(_) = ctx.local_vars.get(name) {
-                ctx.drop_local_var_llvm(name);
-            }
-        }
-
-        // Return value from retval
-        if ctx.retval.is_some() {
-            let ret_value = ctx.read_retval();
-            ctx.drop_retval_llvm();
-            ctx.llvm_builder.build_ret(ret_value.as_ref());
-        } else {
-            ctx.llvm_builder.build_ret_void();
-        }
+        let funcmeta = ctx.mk_func(funcname.clone(), arg_names, sig);
+        let preamb_blk = funcmeta.borrow_mut().mk_preamb(ctx);
+        let drop_blk = funcmeta.borrow_mut().mk_drop(ctx);
 
         /*
          * FUNCTION BODY
          */
-        ctx.parent_func_name = Some(funcname.clone());
-        ctx.ret_block = Some(drop_blk_name.clone());
-        ctx.exit_block = Some(drop_blk_name.clone());
+        ctx.parent_func = Some(Rc::clone(&funcmeta));
+        ctx.exit_block = Some(Rc::clone(&drop_blk));
         let next_blk = body.gencode(ctx);
-        ctx.ret_block = None;
         ctx.exit_block = None;
-        ctx.parent_func_name = None;
-        ctx.drop_retval();
+        ctx.parent_func = None;
         ctx.local_vars.clear();
 
         // Link PREAMB -> BODY
         ctx.llvm_builder.position_at_end(preamb_blk.as_ref());
         ctx.llvm_builder.build_br(next_blk.as_ref());
 
+        // Move to DROP end
         ctx.llvm_builder.position_at_end(drop_blk.as_ref());
 
-        func
+        funcmeta
     }
 }
 
@@ -611,51 +619,41 @@ impl<'r> Codegen<'r, ()> for RootExprAST {
 }
 
 fn module_disasm(ctx: &Context) -> String {
-    let mktemp = || {
-        let stdout = Command::new("mktemp")
-            .output()
-            .unwrap()
-            .stdout;
+    let runcmd = |cmd: &str| -> Option<String> {
+        let chunks = cmd.split(' ').collect::<Vec<&str>>();
+        let name = chunks.first()?;
+        let args = &chunks[1..];
 
-        std::str::from_utf8(&stdout[..])
-            .unwrap()
-            .to_owned()
+        let mut cmd = Command::new(name);
+        args.iter().for_each(|arg| { cmd.arg(arg); });
+
+        let result = cmd.output().ok()?;
+        let stdout = result.stdout;
+
+        std::str::from_utf8(&stdout[..]).ok()
+            .map(|as_str| String::from(as_str))
+    };
+
+    let mktemp = || {
+        let temp = runcmd("mktemp").unwrap();
+        temp.trim().to_owned()
     };
 
     let temp1 = mktemp();
-    let temp1 = temp1.trim();
     let temp2 = mktemp();
-    let temp2 = temp2.trim();
 
     // Run library and dump bitcode in the temp directory
-    /*
-    ctx.llvm_module
-        .verify()
-        .unwrap();
-     */
-    
-    ctx.llvm_module
-        .write_bitcode(&temp1)
-        .unwrap();
+    ctx.llvm_module.verify().unwrap();
+    ctx.llvm_module.write_bitcode(&temp1).unwrap();
 
     // Run llvm-dis and dump disassembly in the temp directory
-    Command::new("llvm-dis").arg(temp1).arg("-o").arg(temp2)
-        .status()
-        .unwrap();
+    runcmd(&format!("llvm-dis {} -o {}", temp1, temp2));
 
     // Read disassembled file
-    let cat_stdout = Command::new("cat").arg(temp2)
-        .output()
-        .unwrap()
-        .stdout;
-
-    // Convert vector of u8s into the string.
-    let disasm = std::str::from_utf8(&cat_stdout[..])
-        .unwrap()
-        .to_string();
+    let disasm = runcmd(&format!("cat {}", temp2)).unwrap();
 
     // Cleanup temps
-    Command::new("rm").arg(temp1).arg(temp2).status().unwrap();
+    runcmd(&format!("rm {} {}", temp1, temp2));
 
     disasm
 }
@@ -665,9 +663,12 @@ fn valuelike_disasm(binexpr: &ValuelikeExprAST) -> String {
     let ref mut ctx = Context::new(llvm);
 
     // Add test function
-    ctx.mk_func("add",
-                llvm::Type::get::<fn(f64, f64) -> f64>(ctx.llvm_ctx));
-    let ref entry = ctx.mk_block("add", "entrypoint");
+    let f64ty = llvm::Type::get::<f64>(ctx.llvm_ctx);
+    let funcmeta = ctx.mk_func("add",
+                               vec!["a".to_string(), "b".to_string()],
+                                   llvm::FunctionType::new(f64ty, &vec![f64ty, f64ty][..]));
+
+    let ref entry = funcmeta.borrow_mut().mk_named_block("entrypoint");
 
     ctx.llvm_builder.position_at_end(entry);
     ctx.llvm_builder.build_ret(88.88f64.compile(ctx.llvm_ctx));

@@ -1,20 +1,11 @@
-let y = (1+2)*((3+4))
-let x = ((2+2)+3*(21))
-
 def add(a, b) -> Num {
     return a+b
 }
 
-def fib(i, j) -> Num {
+def fib(i) -> Num {
     if i == 1 {
-       if j > 10 {
-          return 0
-       }
-
-       let xd = 21 + j
-       return xd
-
+       return 1
     } else {
-       return fib(i-2, j) + fib(i-1, j)
+       return fib(i-2) + fib(i-1)
     }
 }
