@@ -20,6 +20,9 @@ fn main() -> io::Result<()> {
     let ast = mk_ast(&mut tokens);
     println!("{:#?}", ast);
 
+    if let Ok(root) = ast {
+        println!("{}", codegen::gencode(&root));
+    }
 
     Ok(())
 }

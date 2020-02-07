@@ -72,18 +72,18 @@ pub struct CallExprAST {
 
 #[derive(Debug, Clone)]
 pub struct ReturnExprAST {
-    ret: Option<ValuelikeExprAST>
+    pub ret: Option<ValuelikeExprAST>
 }
 
 #[derive(Debug, Clone)]
 pub struct AssignmentExprAST {
-    ident: IdentifierExprAST,
-    value: ValuelikeExprAST
+    pub ident: IdentifierExprAST,
+    pub value: ValuelikeExprAST
 }
 
 #[derive(Debug, Clone)]
 pub struct BlockExprAST {
-    body: Vec<InBlockExprAST>
+    pub body: Vec<InBlockExprAST>
 }
 
 #[derive(Debug, Clone)]
@@ -96,16 +96,15 @@ pub enum InBlockExprAST {
 
 #[derive(Debug, Clone)]
 pub struct IfElseExprAST {
-    // Temporary
-    cond: ValuelikeExprAST,
-    block_if: BlockExprAST,
-    block_else: Option<BlockExprAST>
+    pub cond: ValuelikeExprAST,
+    pub block_if: BlockExprAST,
+    pub block_else: Option<BlockExprAST>
 }
 
 #[derive(Debug, Clone)]
 pub struct FuncDefExprAST {
-    prototype: FuncPrototypeExprAST,
-    body: BlockExprAST
+    pub prototype: FuncPrototypeExprAST,
+    pub body: BlockExprAST
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +115,7 @@ pub enum OutBlockExprAST {
 
 #[derive(Debug, Clone)]
 pub struct RootExprAST {
-    items: Vec<OutBlockExprAST>
+    pub items: Vec<OutBlockExprAST>
 }
 
 impl ParserError {
@@ -127,9 +126,9 @@ impl ParserError {
 
 #[derive(Debug, Clone)]
 pub struct FuncPrototypeExprAST {
-    name: IdentifierExprAST,
-    ret_type: Option<IdentifierExprAST>,
-    args: Vec<IdentifierExprAST>
+    pub name: IdentifierExprAST,
+    pub ret_type: Option<IdentifierExprAST>,
+    pub args: Vec<IdentifierExprAST>
 }
 
 impl error::Error for ParserError {}

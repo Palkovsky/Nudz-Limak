@@ -1,3 +1,20 @@
-let y = (1+2)*((3+4)/xdd(2, 0xE, 3, 0x7))
+let y = (1+2)*((3+4))
 let x = ((2+2)+3*(21))
-let z = -fib(x+1)-fib(x+2)
+
+def add(a, b) -> Num {
+    return a+b
+}
+
+def fib(i, j) -> Num {
+    if i == 1 {
+       if j > 10 {
+          return 0
+       }
+
+       let xd = 21 + j
+       return xd
+
+    } else {
+       return fib(i-2, j) + fib(i-1, j)
+    }
+}
