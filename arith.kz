@@ -2,10 +2,35 @@ def add(a, b) -> Num {
     return a+b
 }
 
-def fib(i) -> Num {
+def max(x, y) -> Num {
+    if x > y {
+       return x
+    } else {
+      return y
+    }
+}
+
+def fib(i, j) -> Num {
     if i == 1 {
        return 1
+    } 
+
+    if j > 5 {
+       if i < 5 {
+          return i+j
+       }
+       if j > 5 {
+         return i-j
+       }
+       return i*j
     } else {
-       return fib(i-2) + fib(i-1)
+      let z = 22
     }
+
+    return fib(i-2, j) + fib(i-1, j)
+}
+
+def main() -> Int {
+    let x = 1
+    return x
 }

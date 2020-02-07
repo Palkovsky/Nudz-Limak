@@ -29,6 +29,13 @@ pub struct IdentifierExprAST {
 }
 
 #[derive(Debug, Clone)]
+pub enum TypeExprAST {
+    Int,
+    Num,
+    Void
+}
+
+#[derive(Debug, Clone)]
 pub struct UnaryOpExprAST {
     pub op: UnaryOp,
     pub expr: ValuelikeExprAST
@@ -127,7 +134,7 @@ impl ParserError {
 #[derive(Debug, Clone)]
 pub struct FuncPrototypeExprAST {
     pub name: IdentifierExprAST,
-    pub ret_type: Option<IdentifierExprAST>,
+    pub ret_type: TypeExprAST,
     pub args: Vec<IdentifierExprAST>
 }
 
@@ -211,6 +218,31 @@ impl ASTNode for IdentifierExprAST {
             Ok(Self { name: val })
         } else {
             Err(ParserError::from(format!("Expected identifier. Got {:?}", next)))
+        }
+    }
+}
+
+impl ASTNode for TypeExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        if VoidTypeExprAST::run_parser(input).is_ok() {
+            return Ok(Self::Void)
+        }
+
+        match input.next() {
+            Some(Token::IDENT(x)) => {
+                match x.as_str() {
+                    "Num" => Ok(Self::Num),
+                    "Int" => Ok(Self::Int),
+                    _ => {
+                        let err = format!("Expected type specification. Got {:?}", x);
+                        Err(ParserError::from(err))
+                    }
+                }
+            },
+            x => {
+                let err = format!("Expected type specification. Got {:?}", x);
+                Err(ParserError::from(err))
+            }
         }
     }
 }
@@ -517,7 +549,15 @@ impl ASTNode for FuncPrototypeExprAST {
 
         let mut args = Vec::new();
         loop {
+            // Case of argless function
+            if SingleTokenExprAST::expect(Token::PAREN_CL, input).is_ok() {
+                break;
+            }
+
+            // Get argname
             args.push(IdentifierExprAST::run_parser(input)?);
+
+            // Ignore comma, finish when closing paren hit
             match input.next() {
                 Some(Token::COMMA) =>
                     {},
@@ -530,15 +570,9 @@ impl ASTNode for FuncPrototypeExprAST {
 
         // Optional return type
         let ret_type = if SingleTokenExprAST::expect(Token::ARROW, input).is_ok() {
-            // Specified (), which represents void
-            if VoidTypeExprAST::run_parser(input).is_ok() {
-                None
-            } else {
-
-                Some(IdentifierExprAST::parse(input)?)
-            }
+            TypeExprAST::run_parser(input)?
         } else {
-            None
+            TypeExprAST::Void
         };
 
         Ok(Self { name: ident, ret_type: ret_type, args: args })

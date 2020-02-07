@@ -84,7 +84,7 @@ impl FuncMeta {
             .map(|r| r.clone())
     }
 
-    fn mk_named_block(&mut self, blkname: impl Into<String>) -> RcBox<BasicBlock> {
+    fn mk_block(&mut self, blkname: impl Into<String>) -> RcBox<BasicBlock> {
         let blkname = blkname.into();
         let block = mk_rcbox(self.func.append(blkname.clone().as_str()));
 
@@ -98,7 +98,7 @@ impl FuncMeta {
 
     fn mk_preamb<'r>(&mut self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
         let preamb_ident = format!("{}_preamb", self.name());
-        let preamb_block = self.mk_named_block(preamb_ident.clone());
+        let preamb_block = self.mk_block(preamb_ident.clone());
         ctx.llvm_builder.position_at_end(&preamb_block);
 
         let func = self.func.clone();
@@ -135,7 +135,7 @@ impl FuncMeta {
 
     fn mk_drop<'r>(&mut self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
         let drop_ident = format!("{}_drop", self.name());
-        let drop_block = self.mk_named_block(drop_ident.clone());
+        let drop_block = self.mk_block(drop_ident.clone());
         ctx.llvm_builder.position_at_end(&drop_block);
 
         let signature = self.func.get_signature();
@@ -158,7 +158,14 @@ impl FuncMeta {
 
     fn set_retval<'r>(&mut self, ctx: &mut Context<'r>, value: RcBox<Value>) {
         if let Some(ptr) = &self.retval {
-            ctx.llvm_builder.build_store(&value, &ptr);
+            // Temporary
+            let val = if self.name() == "main" {
+                mk_rcbox(21i64.compile(ctx.llvm_ctx))
+            } else {
+                value
+            };
+
+            ctx.llvm_builder.build_store(&val, &ptr);
         } else {
             panic!("set_retval(): Tried setting retval in function '{}' without prioir allocation.", self.name());
         }
@@ -446,15 +453,18 @@ impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
 
         // Build block and move builder to the end.
         let block_ident = parenfunc.borrow().gen_blk_ident();
-        let block = parenfunc.borrow_mut().mk_named_block(block_ident.clone());
+        let block = parenfunc.borrow_mut().mk_block(block_ident.clone());
         // Change parent block to newly generated one.
         ctx.parent_block = Some(Rc::clone(&block));
         ctx.llvm_builder.position_at_end(&block);
 
         // Generate body of current block
+        let exitblock_temp = ctx.exit_block.clone();
+        ctx.exit_block = None;
         for expr in &self.body {
             expr.gencode(ctx);
         }
+        ctx.exit_block = exitblock_temp;
 
         // Make sure block is terminated.
         match (self.body.last(), ctx.exit_block.clone()) {
@@ -498,7 +508,9 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 let startblk = ctx.parent_block.clone().unwrap();
 
                 let new_exitblk_name = parenfunc.borrow().gen_blk_ident();
-                let new_exitblk = parenfunc.borrow_mut().mk_named_block(new_exitblk_name.clone());
+                let new_exitblk = parenfunc
+                    .borrow_mut()
+                    .mk_block(new_exitblk_name.clone());
 
                 // Generate first branch
                 ctx.exit_block = Some(Rc::clone(&new_exitblk));
@@ -513,6 +525,9 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                     Rc::clone(&new_exitblk)
                 };
 
+                // No use for exit_block in future processing
+                ctx.exit_block = None;
+
                 // Move back to start block
                 ctx.llvm_builder.position_at_end(&startblk);
                 // Generate code for condition
@@ -521,6 +536,12 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 ctx.llvm_builder.build_cond_br(&cond, &b1, Some(&b2));
                 // Move builder to the end of exitblock
                 ctx.llvm_builder.position_at_end(&new_exitblk);
+                // Exitblock will be a parent for following ones.
+                ctx.parent_block = Some(new_exitblk);
+
+                // PROBLEM: When both branches return, the exitblock is made redundant.
+                // Possible solution: When gencode() for BlockExprAST uses exitblock it sets it to None
+                // this way, caller can determine whether block returned or used exitblock.
             },
 
             InBlockExprAST::Return(ret) => {
@@ -544,8 +565,26 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
     }
 }
 
+impl <'r> Codegen<'r, Box<llvm::Type>> for TypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Box<llvm::Type> {
+        let ty = match self {
+            Self::Int =>
+                llvm::Type::get::<usize>(ctx.llvm_ctx),
+            Self::Num =>
+                llvm::Type::get::<f64>(ctx.llvm_ctx),
+            Self::Void =>
+                llvm::Type::get::<()>(ctx.llvm_ctx),
+        };
+        mk_box(ty)
+    }
+}
+
 impl<'r> Codegen<'r, RcRef<FuncMeta>> for FuncDefExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> RcRef<FuncMeta> {
+        // Use differnet builder for each function
+        let mut builder = llvm::Builder::new(ctx.llvm_ctx);
+        std::mem::swap(&mut builder, &mut ctx.llvm_builder);
+
         let ref prot = self.prototype;
         let ref body = self.body;
 
@@ -561,15 +600,8 @@ impl<'r> Codegen<'r, RcRef<FuncMeta>> for FuncDefExprAST {
         let arg_types = (0..arity)
             .map(|_| llvm::Type::get::<f64>(ctx.llvm_ctx))
             .collect::<Vec<&llvm::Type>>();
-
-        // Either f64 or void as return
-        let ret_type = if let Some(_) = &prot.ret_type {
-            llvm::Type::get::<f64>(ctx.llvm_ctx)
-        } else {
-            llvm::Type::get::<()>(ctx.llvm_ctx)
-        };
-
-        let sig = llvm::FunctionType::new(ret_type, &arg_types[..]);
+        let ret_type = prot.ret_type.gencode(ctx);
+        let sig = llvm::FunctionType::new(&ret_type, &arg_types[..]);
 
         let funcmeta = ctx.mk_func(funcname.clone(), arg_names, sig);
         let preamb_blk = funcmeta.borrow_mut().mk_preamb(ctx);
@@ -592,6 +624,8 @@ impl<'r> Codegen<'r, RcRef<FuncMeta>> for FuncDefExprAST {
         // Move to DROP end
         ctx.llvm_builder.position_at_end(drop_blk.as_ref());
 
+        // Bring back previous builder
+        std::mem::swap(&mut builder, &mut ctx.llvm_builder);
         funcmeta
     }
 }
@@ -600,6 +634,7 @@ impl<'r> Codegen<'r, ()> for OutBlockExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
         match self {
             OutBlockExprAST::Assingment(ass) => {
+                // PROBLEM: Some globals might depend on functions call/other computation.
                 let ref name = ass.ident.name;
                 let valuelike = ass.value.gencode(ctx);
 
@@ -643,7 +678,7 @@ fn module_disasm(ctx: &Context) -> String {
     let temp2 = mktemp();
 
     // Run library and dump bitcode in the temp directory
-    ctx.llvm_module.verify().unwrap();
+    //ctx.llvm_module.verify().unwrap();
     ctx.llvm_module.write_bitcode(&temp1).unwrap();
 
     // Run llvm-dis and dump disassembly in the temp directory
@@ -668,7 +703,7 @@ fn valuelike_disasm(binexpr: &ValuelikeExprAST) -> String {
                                vec!["a".to_string(), "b".to_string()],
                                    llvm::FunctionType::new(f64ty, &vec![f64ty, f64ty][..]));
 
-    let ref entry = funcmeta.borrow_mut().mk_named_block("entrypoint");
+    let ref entry = funcmeta.borrow_mut().mk_block("entrypoint");
 
     ctx.llvm_builder.position_at_end(entry);
     ctx.llvm_builder.build_ret(88.88f64.compile(ctx.llvm_ctx));
