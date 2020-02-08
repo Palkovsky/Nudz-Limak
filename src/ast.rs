@@ -7,41 +7,41 @@ use lexer::Stream;
 
 use std::{error, fmt};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ParserError {
     pub text: String
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 struct SingleTokenExprAST;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct VoidTypeExprAST;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct NumLiteralExprAST {
     pub value: f64
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct IdentifierExprAST {
     pub name: String
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum TypeExprAST {
     Int,
     Num,
     Void
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UnaryOpExprAST {
     pub op: UnaryOp,
     pub expr: ValuelikeExprAST
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum BinOpAtomAST {
     NumericLiteral(NumLiteralExprAST),
     Variable(IdentifierExprAST),
@@ -50,19 +50,19 @@ pub enum BinOpAtomAST {
     Call(CallExprAST)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BinOpExprAST {
     pub lhs: ValuelikeExprAST,
     pub op: BinOp,
     pub rhs: ValuelikeExprAST
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ParenExprAST {
     pub body: ValuelikeExprAST
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ValuelikeExprAST {
     NumericLiteral(NumLiteralExprAST),
     BinExpression(Box<BinOpExprAST>),
@@ -71,29 +71,29 @@ pub enum ValuelikeExprAST {
     Call(CallExprAST)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CallExprAST {
     pub name: IdentifierExprAST,
     pub args: Vec<ValuelikeExprAST>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ReturnExprAST {
     pub ret: Option<ValuelikeExprAST>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AssignmentExprAST {
     pub ident: IdentifierExprAST,
     pub value: ValuelikeExprAST
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BlockExprAST {
     pub body: Vec<InBlockExprAST>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum InBlockExprAST {
     Assingment(AssignmentExprAST),
     Valuelike(ValuelikeExprAST),
@@ -101,26 +101,26 @@ pub enum InBlockExprAST {
     Return(ReturnExprAST)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct IfElseExprAST {
     pub cond: ValuelikeExprAST,
     pub block_if: BlockExprAST,
     pub block_else: Option<BlockExprAST>
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FuncDefExprAST {
     pub prototype: FuncPrototypeExprAST,
     pub body: BlockExprAST
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum OutBlockExprAST {
     Assingment(AssignmentExprAST),
     FuncDef(FuncDefExprAST)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RootExprAST {
     pub items: Vec<OutBlockExprAST>
 }
@@ -131,7 +131,7 @@ impl ParserError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FuncPrototypeExprAST {
     pub name: IdentifierExprAST,
     pub ret_type: TypeExprAST,
