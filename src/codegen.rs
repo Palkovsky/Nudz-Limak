@@ -63,7 +63,7 @@ struct FuncMeta {
 }
 
 impl FuncMeta {
-    fn new<'r>(ctx: &mut Context<'r>, name: impl AsRef<str>, argnames: Vec<String>, ty: &llvm::FunctionType) -> Self {
+    fn new<'r>(ctx: &Context<'r>, name: impl AsRef<str>, argnames: Vec<String>, ty: &llvm::FunctionType) -> Self {
         let funcname = name.as_ref();
         let func = ctx.llvm_module.add_function(funcname, ty);
         let arity = argnames.len();
@@ -133,7 +133,7 @@ impl FuncMeta {
         self.block(preamb_ident.clone()).unwrap()
     }
 
-    fn mk_drop<'r>(&mut self, ctx: &mut Context<'r>) -> RcBox<BasicBlock> {
+    fn mk_drop<'r>(&mut self, ctx: &Context<'r>) -> RcBox<BasicBlock> {
         let drop_ident = format!("{}_drop", self.name());
         let drop_block = self.mk_block(drop_ident.clone());
         ctx.llvm_builder.position_at_end(&drop_block);
@@ -156,7 +156,7 @@ impl FuncMeta {
         self.block(drop_ident.clone()).unwrap()
     }
 
-    fn set_retval<'r>(&mut self, ctx: &mut Context<'r>, value: RcBox<Value>) {
+    fn set_retval<'r>(&mut self, ctx: &Context<'r>, value: RcBox<Value>) {
         if let Some(ptr) = &self.retval {
             // Temporary
             let val = if self.name() == "main" {
@@ -189,19 +189,118 @@ impl FuncMeta {
     }
 }
 
+struct Scope {
+    glob_vars: HashMap<String, RcBox<Value>>,
+
+    stack: Vec<HashMap<String, RcBox<Value>>>,
+    touched: Vec<HashMap<String, bool>>
+}
+
+impl Scope {
+    fn new() -> Self {
+        Self {
+            glob_vars: HashMap::new(),
+            stack: vec![HashMap::new()],
+            touched: vec![HashMap::new()]
+        }
+    }
+
+    fn level(&self) -> usize {
+        self.stack.len()
+    }
+
+    fn local(&self,
+             name: impl Into<String>) -> Option<RcBox<Value>>
+    {
+        let ref key = name.into();
+        let scope = self.stack.last().unwrap();
+        let local_ptr = scope.get(key)?;
+        Some(local_ptr.clone())
+    }
+
+    fn global(&self,
+              name: impl Into<String>) -> Option<RcBox<Value>>
+    {
+        let ref key = name.into();
+
+        let global = self.glob_vars.get(key)?;
+        Some(global.clone())
+    }
+
+    fn add_global(&mut self,
+                  name: impl Into<String>,
+                  value: RcBox<Value>)
+    {
+        let ref key = name.into();
+
+        let insert = self.glob_vars.insert(key.clone(), value);
+        if insert.is_some() {
+            panic!("add_global(): Duplicate value in same scope: '{}'.", key);
+        }
+    }
+
+    fn add_local(&mut self,
+                 name: impl Into<String>,
+                 value: RcBox<Value>)
+    {
+        let ref key = name.into();
+
+        let scope = self.stack.last_mut().unwrap();
+        let scope_touched = self.touched.last_mut().unwrap();
+
+        // Check if local defined in current scope or inherited.
+        let is_touched = *scope_touched.get(key).unwrap_or(&false);
+
+        // Panic when detected redefinition of non-inherited value
+        let insert = scope.insert(key.clone(), value);
+        if insert.is_some() && is_touched {
+            panic!("add_local(): Duplicate redefinition in the same scope: '{}'.", key);
+        }
+
+        // Make sure it's touched now
+        scope_touched.insert(key.clone(), true);
+    }
+
+    fn drop_scope(&mut self) {
+        if self.stack.len() == 1 {
+            panic!("drop_scope(): Attempted to drop base scope.");
+        }
+
+        let n = self.stack.len();
+
+        self.stack.remove(n-1);
+        self.touched.remove(n-1);
+    }
+
+    fn new_scope(&mut self) {
+        let prev_scope = self.stack.last().unwrap();
+
+        let new_scope = prev_scope.clone();
+        let new_touched = new_scope.iter()
+            .map(|(key, _)| (key.clone(), false))
+            .collect::<HashMap<String, bool>>();
+
+        self.stack.push(new_scope);
+        self.touched.push(new_touched);
+    }
+
+    fn drop_all(&mut self) {
+        self.stack = vec![HashMap::new()];
+        self.touched = vec![HashMap::new()];
+    }
+}
+
 struct Context<'r> {
     llvm_ctx: &'r llvm::Context,
     llvm_module: CSemiBox<'r, llvm::Module>,
     llvm_builder: CSemiBox<'r, llvm::Builder>,
 
-    funcs: HashMap<String, RcRef<FuncMeta>>,
     parent_func: Option<RcRef<FuncMeta>>,
-
     exit_block: Option<RcBox<BasicBlock>>,
     parent_block: Option<RcBox<BasicBlock>>,
 
-    glob_vars: HashMap<String, RcBox<Value>>,
-    local_vars: HashMap<String, RcBox<Value>>,
+    funcs: HashMap<String, RcRef<FuncMeta>>,
+    scope: Scope
 }
 
 impl<'r> Context<'r> {
@@ -213,38 +312,41 @@ impl<'r> Context<'r> {
             llvm_module: module,
             llvm_builder: builder,
 
-            funcs: HashMap::new(),
             parent_func: None,
-
             exit_block: None,
             parent_block: None,
 
-            glob_vars: HashMap::new(),
-            local_vars: HashMap::new(),
+            funcs: HashMap::new(),
+            scope: Scope::new()
         }
     }
 
-    fn variable(&self, name: impl Into<String>) -> Option<RcBox<Value>> {
-        let ref key = name.into();
-
-        let global = self.llvm_module.get_global(key)
-            .map(|glob| glob.to_super())
-            .map(|ptr| mk_rcbox(self.llvm_builder.build_load(ptr)));
-
-        let local = self.local_vars.get(key)
-            .map(|ptr| mk_rcbox(self.llvm_builder.build_load(ptr)));
-
-        // Local variable has higher priority
-        local.or(global)
+    fn variable(&self,
+                name: impl Into<String>) -> Option<RcBox<Value>>
+    {
+        let name = name.into();
+        let ptr = self.scope.local(name.clone()).or(self.scope.global(name.clone()));
+        if let Some(ptr) = ptr {
+            let loaded = self.llvm_builder.build_load(&ptr);
+            Some(mk_rcbox(loaded))
+        } else {
+            None
+        }
     }
 
-    fn func(&mut self, name: impl Into<String>) -> Option<RcRef<FuncMeta>> {
+    fn func(&mut self,
+            name: impl Into<String>) -> Option<RcRef<FuncMeta>>
+    {
         let ref varname = name.into();
         self.funcs.get_mut(varname)
             .map(|f| Rc::clone(f))
     }
 
-    fn mk_func(&mut self, name: impl Into<String>, argnames: Vec<String>, ty: &llvm::FunctionType) -> RcRef<FuncMeta> {
+    fn mk_func(&mut self,
+               name: impl Into<String>,
+               argnames: Vec<String>,
+               ty: &llvm::FunctionType) -> RcRef<FuncMeta>
+    {
         let funcname = name.into();
         let funcmeta = FuncMeta::new(self, funcname.clone(), argnames, ty);
 
@@ -253,26 +355,32 @@ impl<'r> Context<'r> {
         funcmeta_rcref
     }
 
-    fn mk_local_var(&mut self, name: impl AsRef<str>, ty: &llvm::Type, def: Option<RcBox<Value>>) -> RcBox<Value> {
+    fn mk_local_var(&mut self,
+                    name: impl AsRef<str>,
+                    ty: &llvm::Type,
+                    def: Option<RcBox<Value>>) -> RcBox<Value>
+    {
         let varname = name.as_ref();
         let alloca = self.llvm_builder.build_alloca(ty);
 
-        self.local_vars.insert(varname.to_owned(), mk_rcbox(alloca));
+        self.scope.add_local(varname, mk_rcbox(alloca));
         if let Some(default) = def {
             self.llvm_builder.build_store(default.as_ref(), alloca);
         }
-
-        self.variable(varname).unwrap()
+        self.scope.local(varname).unwrap()
     }
 
-    fn mk_global_var(&mut self, name: impl AsRef<str>, val: RcBox<Value>) -> RcBox<Value> {
+    fn mk_global_var(&mut self,
+                     name: impl AsRef<str>,
+                     val: RcBox<Value>) -> RcBox<Value>
+    {
         let varname = name.as_ref();
 
         let glob = self.llvm_module.add_global_variable(varname, val.as_ref());
         let glob = glob.to_super().to_super();
 
-        self.glob_vars.insert(varname.to_owned(), mk_rcbox(glob));
-        self.variable(varname).unwrap()
+        self.scope.add_global(varname, mk_rcbox(glob));
+        self.scope.global(varname).unwrap()
     }
 }
 
@@ -458,12 +566,22 @@ impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
         ctx.parent_block = Some(Rc::clone(&block));
         ctx.llvm_builder.position_at_end(&block);
 
-        // Generate body of current block
+        // Create new scope
+        ctx.scope.new_scope();
+
+        // Backup exitblock value
         let exitblock_temp = ctx.exit_block.clone();
         ctx.exit_block = None;
+
+        // Generate body of current block
         for expr in &self.body {
             expr.gencode(ctx);
         }
+
+        // Drop scope
+        ctx.scope.drop_scope();
+
+        // Bring back previous exitblock
         ctx.exit_block = exitblock_temp;
 
         // Make sure block is terminated.
@@ -615,7 +733,7 @@ impl<'r> Codegen<'r, RcRef<FuncMeta>> for FuncDefExprAST {
         let next_blk = body.gencode(ctx);
         ctx.exit_block = None;
         ctx.parent_func = None;
-        ctx.local_vars.clear();
+        ctx.scope.drop_all();
 
         // Link PREAMB -> BODY
         ctx.llvm_builder.position_at_end(preamb_blk.as_ref());

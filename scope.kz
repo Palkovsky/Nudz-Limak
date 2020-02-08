@@ -1,0 +1,13 @@
+def xd(a) -> Num {
+    let x = 1
+    if a > 10 {
+      let x = 2
+
+      if x < 15 {
+         let x = 4
+      }
+    } else {
+      let x = 3
+    }
+    return x
+}
