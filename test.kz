@@ -1,16 +1,16 @@
-# Compute the x'th fibonacci number.
-def fib(x) -> Int {
-  let y = 21
-  return y
-}
-
-# This expression will compute the 40th number.
 let p = 1
 let y = 11
 
+def xd(x) -> Int {
+    if x > 100 {
+       x = x+1
+       let x = 5
+    } else {
+      x = x*2
+    }
+    return x
+}
+
 def main() -> Int {
-    let a = 1
-    let b = 2
-    #a = 3
-    return a+b+y
+    return xd(10)
 }

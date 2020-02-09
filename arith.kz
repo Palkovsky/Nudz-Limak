@@ -16,10 +16,10 @@ def fib(i) -> Int {
     }
     if i == 1 {
        return 1
-    } 
+    }
     return fib(i-2) + fib(i-1)
 }
 
 def main() -> Int {
-    return fib(13) + max(10, 11)
+    return fib(11) + max(10, 11)
 }

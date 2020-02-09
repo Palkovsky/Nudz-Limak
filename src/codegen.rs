@@ -339,28 +339,38 @@ impl<'r> Context<'r> {
         panic!("Requested builder without parent function set.");
     }
 
+    fn deref_ptr(&self,
+                 ptr: RcBox<Value>) -> RcBox<Value>
+    {
+        let builder = self.builder();
+        let loaded = builder.build_load(&ptr);
+        mk_rcbox(loaded)
+    }
+
+    fn local_ptr(&self,
+                    name: impl Into<String>) -> Option<RcBox<Value>>
+    {
+        let parent = self.parent_func.clone()?;
+        let loc = parent.borrow().scope.local(name.into())?;
+        Some(loc)
+    }
+
+    fn global_ptr(&self,
+                  name: impl Into<String>) -> Option<RcBox<Value>>
+    {
+        let ref key = name.into();
+        let ptr = self.glob_vars.get(key)?;
+        Some(mk_rcbox(ptr))
+    }
+
+
     fn variable(&self,
                 name: impl Into<String>) -> Option<RcBox<Value>>
     {
         let name = name.into();
-        let global = self.global(name.clone());
-        let local = if let Some(paren) = &self.parent_func {
-            paren.borrow().scope.local(name.clone())
-        } else {
-            None
-        };
-
-        let ptr = local.or(global);
-
-        if let Some(ptr) = ptr {
-            // Not sure how this works for globals.
-            // Don't know if I should dereference as a pointer or treat as immediate.
-            let builder = self.builder();
-            let loaded = builder.build_load(&ptr);
-            Some(mk_rcbox(loaded))
-        } else {
-            None
-        }
+        self.local_ptr(name.clone())
+            .or(self.global_ptr(name.clone()))
+            .map(|ptr| self.deref_ptr(ptr))
     }
 
     fn func(&mut self,
@@ -387,16 +397,6 @@ impl<'r> Context<'r> {
         funcmeta_rcref
     }
 
-
-    fn global(&self,
-              name: impl Into<String>) -> Option<RcBox<Value>>
-    {
-        let ref key = name.into();
-
-        let global = self.glob_vars.get(key)?;
-        Some(global.clone())
-    }
-
     fn mk_global_var(&mut self,
                      name: impl AsRef<str>,
                      val: RcBox<Value>) -> RcBox<Value>
@@ -407,7 +407,7 @@ impl<'r> Context<'r> {
         let glob = glob.to_super().to_super();
 
         self.glob_vars.insert(varname.to_string(), mk_rcbox(glob));
-        self.global(varname).unwrap()
+        self.global_ptr(varname).unwrap()
     }
 }
 
@@ -586,7 +586,7 @@ impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
 
 impl<'r> Codegen<'r, ()> for InBlockExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
-        let mut parenfunc = ctx.parent_func.clone()
+        let parenfunc = ctx.parent_func.clone()
             .unwrap_or_else(|| panic!("InBlockExpr: no parent func set."));
 
         match self {
@@ -604,8 +604,12 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
 
             InBlockExprAST::ReDeclaration(redecl) => {
                 let ref name = redecl.ident.name;
-                
-                panic!("REDECL")
+                let valuelike = redecl.value.gencode(ctx);
+                let local_ptr = ctx.local_ptr(name)
+                    .unwrap_or_else(|| panic!("Redeclaration of '{}'. No such name in current scope.", name));
+
+                let builder = ctx.builder();
+                builder.build_store(&valuelike, &local_ptr);
             },
 
             InBlockExprAST::If(iff) => {
