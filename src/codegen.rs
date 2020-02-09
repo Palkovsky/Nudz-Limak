@@ -423,16 +423,6 @@ impl<'r> Codegen<'r, RcBox<Value>> for NumLiteralExprAST {
     }
 }
 
-#[test]
-fn num_literal_expr_test() {
-    let ref mut ctx = Context::new();
-    let expr = NumLiteralExprAST { value: 88.88 };
-    println!("{:=<1$}", "", 80);
-    println!("{:?} => {:?}", expr, expr.gencode(ctx));
-    println!("{:=<1$}", "", 80);
-    assert!(false);
-}
-
 impl<'r> Codegen<'r, RcBox<Value>> for ValuelikeExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         match self {
@@ -516,34 +506,6 @@ impl<'r> Codegen<'r, RcBox<Value>> for BinOpExprAST {
     }
 }
 
-#[test]
-fn bin_expr_test() {
-    let ref mut ctx = Context::new();
-
-    let num1 = ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: 88.88 });
-    let num2 = ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: 44.44 });
-    let expr1 = ValuelikeExprAST::UnaryExpression(Box::new(
-        UnaryOpExprAST {
-            op: UnaryOp::NOT,
-            expr: num1
-        }
-    ));
-
-    let expr = ValuelikeExprAST::BinExpression(Box::new(
-        BinOpExprAST {
-            lhs: expr1,
-            rhs: num2,
-            op: BinOp::MUL
-        }
-    ));
-
-    println!("{:=<1$}", "", 50);
-    println!("{:?} => {:?}", expr, expr.gencode(ctx));
-    println!("{:=<1$}", "", 50);
-
-    assert!(false);
-}
-
 impl<'r> Codegen<'r, RcBox<Value>> for UnaryOpExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
         let value = self.expr.gencode(ctx);
@@ -558,25 +520,6 @@ impl<'r> Codegen<'r, RcBox<Value>> for UnaryOpExprAST {
 
         mk_rcbox(value_op)
     }
-}
-
-#[test]
-fn unary_expr_test() {
-    let ref mut ctx = Context::new();
-    let num1 = ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: 88.88 });
-    let expr1 = UnaryOpExprAST {
-        op: UnaryOp::NOT,
-        expr: num1
-    };
-    let expr2 = UnaryOpExprAST {
-        op: UnaryOp::MINUS,
-        expr: ValuelikeExprAST::UnaryExpression(Box::new(expr1))
-    };
-
-    println!("{:=<1$}", "", 80);
-    println!("{:?} => {:?}", expr2, expr2.gencode(ctx));
-    println!("{:=<1$}", "", 80);
-    assert!(false);
 }
 
 impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
@@ -643,27 +586,29 @@ impl<'r> Codegen<'r, RcBox<BasicBlock>> for BlockExprAST {
 
 impl<'r> Codegen<'r, ()> for InBlockExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
+        let mut parenfunc = ctx.parent_func.clone()
+            .unwrap_or_else(|| panic!("InBlockExpr: no parent func set."));
+
         match self {
-            InBlockExprAST::Assingment(ass) => {
-                let ref name = ass.ident.name;
-                let valuelike = ass.value.gencode(ctx);
-
-                // Assume it's i64
-                let ty = llvm::Type::get::<i64>(&ctx.llvm_ctx);
-
-                let parenfunc = ctx.parent_func.clone()
-                    .unwrap_or_else(|| panic!("InBlockAssingment: no parent func set."));
-                parenfunc.borrow_mut().mk_local_var(name, ty, Some(valuelike));
-            },
-
             // Ignored for now
             InBlockExprAST::Valuelike(_) => {},
 
-            InBlockExprAST::If(iff) => {
-                // Create exit block for if branches
-                let parenfunc = ctx.parent_func.clone()
-                    .unwrap_or_else(|| panic!("If without parent function."));
+            InBlockExprAST::Declaration(decl) => {
+                let ref name = decl.ident.name;
+                let valuelike = decl.value.gencode(ctx);
 
+                // Assume i64 for now
+                let ty = llvm::Type::get::<i64>(&ctx.llvm_ctx);
+                parenfunc.borrow_mut().mk_local_var(name, ty, Some(valuelike));
+            },
+
+            InBlockExprAST::ReDeclaration(redecl) => {
+                let ref name = redecl.ident.name;
+                
+                panic!("REDECL")
+            },
+
+            InBlockExprAST::If(iff) => {
                 let startblk = ctx.parent_block.clone().unwrap();
 
                 let new_exitblk_name = parenfunc.borrow().gen_blk_ident();
@@ -704,9 +649,6 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
             },
 
             InBlockExprAST::Return(ret) => {
-                // Create return block for current branch.
-                let parenfunc = ctx.parent_func.clone()
-                    .unwrap_or_else(|| panic!("Return without parent function."));
                 let parenfunc_name = parenfunc.borrow().name();
 
                 // Setting return value
@@ -787,10 +729,10 @@ impl<'r> Codegen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
 impl<'r> Codegen<'r, ()> for OutBlockExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
         match self {
-            OutBlockExprAST::Assingment(ass) => {
+            OutBlockExprAST::Declaration(decl) => {
                 // PROBLEM: Some globals might depend on functions call/other computation.
-                let ref name = ass.ident.name;
-                let valuelike = ass.value.gencode(ctx);
+                let ref name = decl.ident.name;
+                let valuelike = decl.value.gencode(ctx);
 
                 ctx.mk_global_var(name, valuelike);
             },
@@ -871,44 +813,6 @@ fn execute<'r>(ctx: &Context<'r>) -> i32 {
         .unwrap_or_else(|_| panic!("Error executing 'lli {}'.", &temp))
         .code()
         .unwrap()
-}
-
-fn valuelike_disasm(binexpr: &ValuelikeExprAST) -> String {
-    let mut ctx = Context::new();
-    let llvm_ctx = ctx.llvm_ctx.clone();
-
-    // Add test function
-    let i64ty = llvm::Type::get::<i64>(&llvm_ctx);
-    let funcmeta = ctx.mk_func("add",
-                               vec!["a".to_string(), "b".to_string()],
-                                   llvm::FunctionType::new(i64ty, &vec![i64ty, i64ty][..]));
-
-    let ref entry = funcmeta.borrow_mut().mk_block("entrypoint");
-
-    ctx.builder().position_at_end(entry);
-    ctx.builder().build_ret(88i64.compile(&ctx.llvm_ctx));
-
-    // This type signature won't be possible to run.
-    // Executables must have C-like signature: int main()/int main(int argc, char**argv)
-    let func = mk_box(
-        ctx.llvm_module.add_function("main",
-                                     llvm::Type::get::<fn() -> i64>(&ctx.llvm_ctx)));
-
-    let entrypoint = func.append("entrypoint");
-    ctx.builder().position_at_end(entrypoint);
-
-    let value = binexpr.gencode(&mut ctx);
-    ctx.builder().build_ret(value.as_ref());
-
-    disasm(&mut ctx)
-}
-
-#[test]
-fn simple_binexpr_codegen_test() {
-    let ref mut tokens = mk_tokens("add(add(1, 2+3), (-5+2)*3/2)".to_owned()).unwrap();
-    let ref binexpr = ValuelikeExprAST::run_parser(tokens).unwrap();
-    println!("{}", valuelike_disasm(binexpr));
-    assert!(false);
 }
 
 pub fn gencode(root: &RootExprAST) -> (String, impl Fn() -> i32) {

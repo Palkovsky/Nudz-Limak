@@ -1,6 +1,6 @@
 # Compute the x'th fibonacci number.
-def fib(x) -> Num {
-  let y = 21.37
+def fib(x) -> Int {
+  let y = 21
   return y
 }
 
@@ -9,5 +9,8 @@ let p = 1
 let y = 11
 
 def main() -> Int {
-    return p+y
+    let a = 1
+    let b = 2
+    #a = 3
+    return a+b+y
 }

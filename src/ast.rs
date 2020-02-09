@@ -83,7 +83,13 @@ pub struct ReturnExprAST {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct AssignmentExprAST {
+pub struct DeclarationExprAST {
+    pub ident: IdentifierExprAST,
+    pub value: ValuelikeExprAST
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ReDeclarationExprAST {
     pub ident: IdentifierExprAST,
     pub value: ValuelikeExprAST
 }
@@ -95,7 +101,8 @@ pub struct BlockExprAST {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum InBlockExprAST {
-    Assingment(AssignmentExprAST),
+    Declaration(DeclarationExprAST),
+    ReDeclaration(ReDeclarationExprAST),
     Valuelike(ValuelikeExprAST),
     If(IfElseExprAST),
     Return(ReturnExprAST)
@@ -116,7 +123,7 @@ pub struct FuncDefExprAST {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum OutBlockExprAST {
-    Assingment(AssignmentExprAST),
+    Declaration(DeclarationExprAST),
     FuncDef(FuncDefExprAST)
 }
 
@@ -475,18 +482,36 @@ impl ASTNode for ValuelikeExprAST {
     }
 }
 
-impl ASTNode for AssignmentExprAST {
+impl ASTNode for DeclarationExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         SingleTokenExprAST::expect(Token::LET, input)?;
 
         let ident = IdentifierExprAST::run_parser(input)?;
 
-        let next = input.next();
-        if let Some(Token::ASSIGNMENT) = next {
-            let value = ValuelikeExprAST::run_parser(input)?;
-            Ok(Self { ident: ident, value: value })
-        } else {
-            Err(ParserError::from(format!("Expected '=' got '{:?}'.", next)))
+        match input.next() {
+            Some(Token::ASSIGNMENT) => {
+                let value = ValuelikeExprAST::run_parser(input)?;
+                Ok(Self { ident: ident, value: value })
+            },
+            next => {
+                Err(ParserError::from(format!("Expected '=' got '{:?}'.", next)))
+            }
+        }
+    }
+}
+
+impl ASTNode for ReDeclarationExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        let ident = IdentifierExprAST::run_parser(input)?;
+
+        match input.next() {
+            Some(Token::ASSIGNMENT) => {
+                let value = ValuelikeExprAST::run_parser(input)?;
+                Ok(Self { ident: ident, value: value })
+            },
+            next => {
+                Err(ParserError::from(format!("Expected '=' got '{:?}'.", next)))
+            }
         }
     }
 }
@@ -495,8 +520,10 @@ impl ASTNode for InBlockExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         if let Ok(ret) = ReturnExprAST::run_parser(input) {
             Ok(Self::Return(ret))
-        } else if let Ok(asign) = AssignmentExprAST::run_parser(input) {
-            Ok(Self::Assingment(asign))
+        } else if let Ok(decl) = DeclarationExprAST::run_parser(input) {
+            Ok(Self::Declaration(decl))
+        } else if let Ok(redecl) = ReDeclarationExprAST::run_parser(input) {
+            Ok(Self::ReDeclaration(redecl))
         } else if let Ok(iff) = IfElseExprAST::run_parser(input) {
             Ok(Self::If(iff))
         } else if let Ok(value) = ValuelikeExprAST::run_parser(input) {
@@ -589,8 +616,8 @@ impl ASTNode for FuncDefExprAST {
 
 impl ASTNode for OutBlockExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(asign) = AssignmentExprAST::run_parser(input) {
-            Ok(Self::Assingment(asign))
+        if let Ok(decl) = DeclarationExprAST::run_parser(input) {
+            Ok(Self::Declaration(decl))
         } else if let Ok(def) = FuncDefExprAST::run_parser(input) {
             Ok(Self::FuncDef(def))
         } else {
