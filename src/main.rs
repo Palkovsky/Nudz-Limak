@@ -39,6 +39,5 @@ fn main() -> () {
         print_header("EXECUTION");
         println!("Status: {}", run());
     }
-
     std::process::exit(0)
 }

@@ -369,7 +369,7 @@ impl BinOpExprAST {
             } else {
                 let l_ops = &ops[..split];
                 let r_ops = &ops[split+1..];
-                let l_atoms = &atoms[..split];
+                let l_atoms = &atoms[..split+1];
                 let r_atoms = &atoms[split+1..];
 
                 let lhs = if l_ops.len() > 0 {

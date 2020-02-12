@@ -1,4 +1,14 @@
+def abs(x) -> Int {
+    if x < 0 {
+       return -x
+    }
+    return x
+}
+
 def mod(a, b) -> Int {
+    if a < 0 || b < 0 {
+       return -1
+    }
     while a >= b {
           a = a - b
     }
@@ -24,6 +34,6 @@ def isprime(x) -> Int {
 }
 
 def main() -> Int {
-    return isprime(97)
+    return isprime(83)
 }
 
