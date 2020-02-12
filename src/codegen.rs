@@ -659,6 +659,46 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 // this way, caller can determine whether block returned or used exitblock.
             },
 
+            InBlockExprAST::While(wwhile) => {
+                // 1. Create exit block.
+                // 2. Create loop body block.
+                // 3. Create block for condition checking.
+                //    It should branch conditionally to either exit
+                //    or loop body.
+                // 4. Terminate loop block with branch to condition block.
+                let startblk = ctx.parent_block.clone().unwrap();
+
+                // EXIT BLOCK
+                let new_exitblk_name = parenfunc.borrow().gen_blk_ident();
+                let exitblk = parenfunc
+                    .borrow_mut()
+                    .mk_block(new_exitblk_name.clone());
+
+                // CONDITION BLOCK
+                let new_condblock_name = parenfunc.borrow().gen_blk_ident();
+                let condblk = parenfunc
+                    .borrow_mut()
+                    .mk_block(new_condblock_name.clone());
+
+                // LOOP BODY BLOCK
+                ctx.exit_block = Some(condblk.clone());
+                let loopblk = wwhile.body.gencode(ctx);
+                ctx.exit_block = None;
+
+                // Terminate condition block with conditional branch
+                ctx.builder().position_at_end(&condblk);
+                let cond = wwhile.cond.gencode(ctx);
+                ctx.builder().build_cond_br(&cond, &loopblk, Some(&exitblk));
+
+                // Terminate start with branch to conditional
+                ctx.builder().position_at_end(&startblk);
+                ctx.builder().build_br(&condblk);
+
+                // Exitblock will be new parent block for next ASTNodes.
+                ctx.builder().position_at_end(&exitblk);
+                ctx.parent_block = Some(exitblk);
+            },
+
             InBlockExprAST::Return(ret) => {
                 let parenfunc_name = parenfunc.borrow().name();
 

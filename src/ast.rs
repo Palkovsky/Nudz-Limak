@@ -105,6 +105,7 @@ pub enum InBlockExprAST {
     ReDeclaration(ReDeclarationExprAST),
     Valuelike(ValuelikeExprAST),
     If(IfElseExprAST),
+    While(WhileExprAST),
     Return(ReturnExprAST)
 }
 
@@ -113,6 +114,12 @@ pub struct IfElseExprAST {
     pub cond: ValuelikeExprAST,
     pub block_if: BlockExprAST,
     pub block_else: Option<BlockExprAST>
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct WhileExprAST {
+    pub cond: ValuelikeExprAST,
+    pub body: BlockExprAST
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -542,6 +549,8 @@ impl ASTNode for InBlockExprAST {
             Ok(Self::ReDeclaration(redecl))
         } else if let Ok(iff) = IfElseExprAST::run_parser(input) {
             Ok(Self::If(iff))
+        } else if let Ok(wwhile) = WhileExprAST::run_parser(input) {
+            Ok(Self::While(wwhile))
         } else if let Ok(value) = ValuelikeExprAST::run_parser(input) {
             Ok(Self::Valuelike(value))
         } else {
@@ -579,6 +588,15 @@ impl ASTNode for IfElseExprAST {
         };
 
         Ok(Self { cond: cond, block_if: block_if, block_else: block_else })
+    }
+}
+
+impl ASTNode for WhileExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        SingleTokenExprAST::expect(Token::WHILE, input)?;
+        let cond = ValuelikeExprAST::run_parser(input)?;
+        let body = BlockExprAST::run_parser(input)?;
+        Ok(Self { cond: cond, body: body })
     }
 }
 
