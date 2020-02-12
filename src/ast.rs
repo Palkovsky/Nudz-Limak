@@ -427,6 +427,11 @@ impl ASTNode for CallExprAST {
         let mut args = Vec::new();
 
         loop {
+            // Argless function
+            if SingleTokenExprAST::expect(Token::PAREN_CL, input).is_ok() {
+                break;
+            }
+
             args.push(ValuelikeExprAST::run_parser(input)?);
 
             match input.next() {
@@ -576,7 +581,7 @@ impl ASTNode for FuncPrototypeExprAST {
 
         let mut args = Vec::new();
         loop {
-            // Case of argless function
+            // Argless function
             if SingleTokenExprAST::expect(Token::PAREN_CL, input).is_ok() {
                 break;
             }
