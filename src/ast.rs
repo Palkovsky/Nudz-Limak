@@ -467,6 +467,17 @@ impl ASTNode for ReturnExprAST {
     }
 }
 
+impl ValuelikeExprAST {
+    // This should be more complex.
+    // It should for example accept binary/unary epxpressions of literals.
+    pub fn is_literal(&self) -> bool {
+        match self {
+            Self::NumericLiteral(_) => true,
+            _ => false
+        }
+    }
+}
+
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         if let Ok(expr) = BinOpExprAST::run_parser(input) {

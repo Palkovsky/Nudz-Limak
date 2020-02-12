@@ -1,10 +1,12 @@
 let p = 1
 let y = 11
 
-def xd(x) -> Int {
+def xd(x, y) -> Int {
     if x > 100 {
+       if x <= 150 {
+          x = x+y
+       }       
        x = x+1
-       let x = 5
     } else {
       x = x*2
     }
@@ -12,5 +14,5 @@ def xd(x) -> Int {
 }
 
 def main() -> Int {
-    return xd(10)
+    return xd(150, 5)
 }

@@ -1,17 +1,14 @@
-let p = 1
-
-def xd(a) -> Int {
-    let x = 1
-    if a > 10 {
-      let x = 10
-
-      return x
-    } else {
-      let x = 3
-    }
-    return x+p
-}
-
 def main() -> Int {
-    return xd(11)
+    return a()+x
 }
+
+def a() -> Int {
+    return b()
+}
+
+let x = 1
+
+def b() -> Int {
+    return 1
+}
+

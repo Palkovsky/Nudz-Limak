@@ -298,12 +298,15 @@ struct Context<'r> {
     llvm_ctx: RcBox<llvm::Context>,
     llvm_module: RcSemiBox<'r, llvm::Module>,
 
+    /// Pointer to parent function of currently processed ASTNode.
     parent_func: Option<RcRef<FuncMeta<'r>>>,
+    /// Instructs BlockExprAST to unconditionaly branch out to this block, after generating code for it.
     exit_block: Option<RcBox<BasicBlock>>,
+    /// Pointer to block in which builder currently stays in.
     parent_block: Option<RcBox<BasicBlock>>,
 
     funcs: HashMap<String, RcRef<FuncMeta<'r>>>,
-    glob_vars: HashMap<String, RcBox<Value>>
+    globals: HashMap<String, RcBox<Value>>
 }
 
 impl<'r> Context<'r> {
@@ -327,7 +330,7 @@ impl<'r> Context<'r> {
             parent_block: None,
 
             funcs: HashMap::new(),
-            glob_vars: HashMap::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -359,7 +362,7 @@ impl<'r> Context<'r> {
                   name: impl Into<String>) -> Option<RcBox<Value>>
     {
         let ref key = name.into();
-        let ptr = self.glob_vars.get(key)?;
+        let ptr = self.globals.get(key)?;
         Some(mk_rcbox(ptr))
     }
 
@@ -402,17 +405,21 @@ impl<'r> Context<'r> {
                      val: RcBox<Value>) -> RcBox<Value>
     {
         let varname = name.as_ref();
-
         let glob = self.llvm_module.add_global_variable(varname, val.as_ref());
         let glob = glob.to_super().to_super();
 
-        self.glob_vars.insert(varname.to_string(), mk_rcbox(glob));
+        self.globals.insert(varname.to_string(), mk_rcbox(glob));
         self.global_ptr(varname).unwrap()
     }
 }
 
 trait Codegen<'r, T> {
     fn gencode(&self, ctx: &mut Context<'r>) -> T;
+}
+
+/// Used for generating stub values, i.e. functions signatues without impl.
+trait Stubgen<'r, T> {
+    fn genstub(&self, ctx: &mut Context<'r>) -> T;
 }
 
 impl<'r> Codegen<'r, RcBox<Value>> for NumLiteralExprAST {
@@ -689,23 +696,10 @@ impl<'r> Codegen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
         let ref prot = self.prototype;
         let ref body = self.body;
 
-        let arity = prot.args.len();
         let ref funcname = prot.name.name;
 
-        // Extract arg names
-        let arg_names = prot.args.iter()
-            .map(|ident| ident.name.clone())
-            .collect::<Vec<String>>();
-
-        // Assume i64 args only
-        let llvm_ctx = ctx.llvm_ctx.clone();
-        let arg_types = (0..arity)
-            .map(|_| llvm::Type::get::<i64>(&llvm_ctx))
-            .collect::<Vec<&llvm::Type>>();
-        let ret_type = prot.ret_type.gencode(ctx);
-        let sig = llvm::FunctionType::new(&ret_type, &arg_types[..]);
-
-        let funcmeta = ctx.mk_func(funcname.clone(), arg_names, sig);
+        let funcmeta = ctx.func(funcname.clone())
+            .unwrap_or_else(|| panic!("FuncDefExprAST: No FuncMeta for '{}'.", funcname));
         ctx.parent_func = Some(Rc::clone(&funcmeta));
 
         let preamb_blk = funcmeta.borrow_mut().mk_preamb();
@@ -733,13 +727,8 @@ impl<'r> Codegen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
 impl<'r> Codegen<'r, ()> for OutBlockExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
         match self {
-            OutBlockExprAST::Declaration(decl) => {
-                // PROBLEM: Some globals might depend on functions call/other computation.
-                let ref name = decl.ident.name;
-                let valuelike = decl.value.gencode(ctx);
-
-                ctx.mk_global_var(name, valuelike);
-            },
+            // Globals generation is handled by Stubgen
+            OutBlockExprAST::Declaration(_) => {},
             OutBlockExprAST::FuncDef(funcdef) => {
                 funcdef.gencode(ctx);
             }
@@ -749,7 +738,56 @@ impl<'r> Codegen<'r, ()> for OutBlockExprAST {
 
 impl<'r> Codegen<'r, ()> for RootExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> () {
+        // Detect all function signatures/globals.
+        self.items.iter().for_each(|expr| expr.genstub(ctx));
+        // Perform actuall code generation.
         self.items.iter().for_each(|expr| { expr.gencode(ctx); });
+    }
+}
+
+/// Stubgen for FuncDefExprAST will detect function signature and create entry in funcs HashMap. It WILL NOT generate function body.
+impl<'r> Stubgen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
+    fn genstub(&self, ctx: &mut Context<'r>) -> RcRef<FuncMeta<'r>> {
+        let ref prot = self.prototype;
+        let ref funcname = prot.name.name;
+        let arity = prot.args.len();
+
+        // Extract arg names
+        let arg_names = prot.args.iter()
+            .map(|ident| ident.name.clone())
+            .collect::<Vec<String>>();
+
+        // Assume i64 args only
+        let llvm_ctx = ctx.llvm_ctx.clone();
+        let arg_types = (0..arity)
+            .map(|_| llvm::Type::get::<i64>(&llvm_ctx))
+            .collect::<Vec<&llvm::Type>>();
+        let ret_type = prot.ret_type.gencode(ctx);
+        let sig = llvm::FunctionType::new(&ret_type, &arg_types[..]);
+
+        ctx.mk_func(funcname.clone(), arg_names, sig)
+    }
+}
+
+/// Stubgen for OutBlockExprAST will detect globals initialized with literals + Stubgen for function definitions.
+impl<'r> Stubgen<'r, ()> for OutBlockExprAST {
+    fn genstub(&self, ctx: &mut Context<'r>) -> () {
+        match self {
+            OutBlockExprAST::Declaration(decl) => {
+                let ref name = decl.ident.name;
+                let ref value = decl.value;
+
+                if !value.is_literal() {
+                    panic!("Value of global '{}' must be literal.", name);
+                }
+
+                let ref valuelike = value.gencode(ctx);
+                ctx.mk_global_var(name, mk_rcbox(valuelike));
+            },
+            OutBlockExprAST::FuncDef(funcdef) => {
+                funcdef.genstub(ctx);
+            }
+        }
     }
 }
 
