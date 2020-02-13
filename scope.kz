@@ -1,11 +1,11 @@
-def abs(x) -> Int {
+def abs(x: int) -> int {
     if x < 0 {
        return -x
     }
     return x
 }
 
-def mod(a, b) -> Int {
+def mod(a: int, b: int) -> int {
     if a < 0 || b < 0 {
        return -1
     }
@@ -16,14 +16,14 @@ def mod(a, b) -> Int {
 }
 
 # 1 - true, 0 - false
-def isprime(x) -> Int {
+def isprime(x: int) -> int {
     if x <= 1 {
        return 0
     }
     if x == 2 {
        return 1
     }
-    let i = 2
+    let i: int = 2
     while i <= x/2 {
           if mod(x, i) == 0 {
              return 0
@@ -33,7 +33,7 @@ def isprime(x) -> Int {
     return 1
 }
 
-def main() -> Int {
+def main() -> int {
     return isprime(83)
 }
 

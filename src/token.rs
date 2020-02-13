@@ -31,7 +31,9 @@ pub enum BinOp {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
     NOT,
-    MINUS
+    MINUS,
+    REF,
+    DEREF
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -51,6 +53,7 @@ pub enum Token {
     BLOCK_OP,
     BLOCK_CL,
     COMMA,
+    COLON,
     IDENT(String),
     BIN_OP(BinOp),
     UNARY_OP(UnaryOp),
@@ -116,6 +119,8 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             "{"  => LexStatus::Token(Token::BLOCK_OP),
             "}"  => LexStatus::Token(Token::BLOCK_CL),
             ","  => LexStatus::Token(Token::COMMA),
+            ":"  => LexStatus::Token(Token::COLON),
+            "&"  => LexStatus::Token(Token::UNARY_OP(UnaryOp::REF)),
             "+"  => LexStatus::Token(Token::BIN_OP(BinOp::ADD)),
             "*"  => LexStatus::Token(Token::BIN_OP(BinOp::MUL)),
             "/"  => LexStatus::Token(Token::BIN_OP(BinOp::DIV)),
@@ -293,7 +298,13 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
         let first = *chars.first().unwrap();
         let last = *chars.last().unwrap();
 
-        match (first.is_ascii_alphabetic(), last.is_ascii_alphanumeric(), eof) {
+        let is_last_valid = |chr: char| {
+            let mut valid = chr.is_ascii_alphanumeric();
+            valid |= chr == '_';
+            valid
+        };
+
+        match (first.is_ascii_alphabetic(), is_last_valid(last), eof) {
             (false, _, _) =>
                 LexStatus::Fail,
             (_, false, _) =>

@@ -1,3 +1,11 @@
-let a = 2*(2+2)
-let b = 2 > 3
-let c = (a > 1) && b
+def func(a: *int) -> () {
+    while *a > 10 {
+          *a = *a-1
+    }
+}
+
+def main() -> int {
+    let x: int = 150
+    func(&x)
+    return x
+}
