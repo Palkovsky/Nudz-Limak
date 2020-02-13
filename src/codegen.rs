@@ -127,6 +127,23 @@ impl<'r> FuncMeta<'r> {
         self.scope.local(varname).unwrap()
     }
 
+    fn mk_local_arr(&mut self,
+                    name: impl AsRef<str>,
+                    ty: &llvm::Type,
+                    size: RcBox<Value>) -> RcBox<Value>
+    {
+
+        let builder = self.builder.clone();
+
+        let arrname = name.as_ref();
+        let arr_ptr = builder.build_array_alloca(ty, &size);
+
+        // alloca is pointer to first element on stack
+        // we need to store ptr to ptr on stack
+
+        self.mk_local_var(arrname, arr_ptr.get_type(), Some(mk_rcbox(arr_ptr)))
+    }
+
     fn mk_preamb(&mut self) -> RcBox<BasicBlock> {
         let preamb_ident = format!("{}_preamb", self.name());
         let preamb_block = self.mk_block(preamb_ident.clone());
@@ -191,7 +208,8 @@ impl<'r> FuncMeta<'r> {
     }
 
     fn set_retval(&mut self,
-                  value: RcBox<Value>) {
+                  value: RcBox<Value>)
+    {
         if let Some(ptr) = &self.retval {
             self.builder.build_store(&value, &ptr);
         } else {
@@ -484,11 +502,25 @@ impl<'r> Codegen<'r, RcBox<Value>> for BinOpExprAST {
         let ref rhs = self.rhs.gencode(ctx);
         let ref builder = ctx.builder();
 
+        // Detect if we're dealing with pointer arithmetic.
+        let ptr_artih = lhs.get_type().is_pointer() || rhs.get_type().is_pointer();
+
         let res = match self.op {
-            BinOp::ADD =>
-                builder.build_add(lhs, rhs),
-            BinOp::SUB =>
-                builder.build_sub(lhs, rhs),
+            BinOp::ADD => {
+                if ptr_artih {
+                    builder.build_unsafe_gep(lhs, &[rhs])
+                } else {
+                    builder.build_add(lhs, rhs)
+                }
+            },
+            BinOp::SUB => {
+                let neg_rhs = builder.build_neg(rhs);
+                if ptr_artih {
+                    builder.build_unsafe_gep(lhs, &[neg_rhs])
+                } else {
+                    builder.build_sub(lhs, rhs)
+                }
+            },
             BinOp::MUL =>
                 builder.build_mul(lhs, rhs),
             BinOp::DIV =>
@@ -655,9 +687,38 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
 
             InBlockExprAST::Declaration(decl) => {
                 let ref name = decl.ident.name;
-                let valuelike = decl.value.gencode(ctx);
                 let ty = decl.ty.gencode(ctx);
-                parenfunc.borrow_mut().mk_local_var(name, &ty, Some(valuelike));
+
+                match &decl.value {
+                    DeclarationRHSExprAST::Valuelike(valuelike) => {
+                        let valuelike = valuelike.gencode(ctx);
+                        println!("RHS: {:?}", valuelike);
+                        parenfunc.borrow_mut().mk_local_var(name, &ty, Some(valuelike))
+                    },
+
+                    DeclarationRHSExprAST::Array(
+                        ArrayDeclarationExprAST::BySize(sizeval)
+                    ) => {
+                        let size = sizeval.gencode(ctx);
+
+                        // Arrays should have pointer type specified.
+                        assert!(ty.is_pointer());
+                        let ty: &llvm::PointerType =
+                            llvm::Sub::<llvm::Type>::from_super(&ty).unwrap();
+
+                        parenfunc.borrow_mut().mk_local_arr(
+                            name,
+                            ty.get_element(),
+                            size
+                        )
+                    },
+
+                    DeclarationRHSExprAST::Array(
+                        ArrayDeclarationExprAST::ByElements(elems)
+                    ) => {
+                        panic!("By element decl not supported yet.")
+                    }
+                };
             },
 
             InBlockExprAST::ReDeclaration(redecl) => {
@@ -676,13 +737,11 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                     // 1. Evaluate body of deref and make sure it's a pointer.
                     // 2. Write evaluated value into target address.
                     WritableExprAST::PtrWrite(deref) => {
-                        assert_eq!(deref.op, UnaryOp::DEREF);
-
-                        let target_ptr = deref.expr.gencode(ctx);
+                        let target_ptr = deref.target.gencode(ctx);
                         let target_ty = target_ptr.get_type();
 
                         if !target_ty.is_pointer() {
-                            panic!("PtrWrite: {:?} was expected to be a pointer.", deref.expr);
+                            panic!("PtrWrite: {:?} was expected to be a pointer.", deref.target);
                         }
 
                         let builder = ctx.builder();
@@ -890,6 +949,7 @@ impl<'r> Stubgen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
             .collect::<Vec<RcBox<llvm::Type>>>();
 
         let ret_type = prot.ret_type.gencode(ctx);
+        println!("Return type: {:?}", ret_type);
         let sig = llvm::FunctionType::new(&ret_type, &mk_slice(&arg_types)[..]);
 
         ctx.mk_func(funcname.clone(), arg_names, sig)
@@ -904,12 +964,20 @@ impl<'r> Stubgen<'r, ()> for OutBlockExprAST {
                 let ref name = decl.ident.name;
                 let ref value = decl.value;
 
-                if !value.is_literal() {
+                let is_lit = match value {
+                    DeclarationRHSExprAST::Valuelike(value) =>
+                        value.is_literal(),
+                    _ => false
+                };
+
+                if !is_lit {
                     panic!("Value of global '{}' must be literal.", name);
                 }
 
-                let ref valuelike = value.gencode(ctx);
-                ctx.mk_global_var(name, mk_rcbox(valuelike));
+                if let DeclarationRHSExprAST::Valuelike(valuelike) = value {
+                    let ref valuelike = valuelike.gencode(ctx);
+                    ctx.mk_global_var(name, mk_rcbox(valuelike));
+                }
             },
             OutBlockExprAST::FuncDef(funcdef) => {
                 funcdef.genstub(ctx);

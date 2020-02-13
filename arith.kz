@@ -1,11 +1,26 @@
-def func(a: *int) -> () {
-    while *a > 10 {
-          *a = *a-1
-    }
+def max(arr: @int, size: int) -> int {
+   let i: int = 0
+   let max: @int = arr
+   while i < size {
+     if @(arr+i) > @max {
+        max = arr+i
+     }
+     i = i+1
+   } 
+   return @max
 }
 
 def main() -> int {
-    let x: int = 150
-    func(&x)
-    return x
+    let n: int = 5
+    let x: @int = [n]
+
+    @(x+0) = 70
+    @(x+1) = 2
+    @(x+2) = 10
+    @(x+3) = 89
+    @(x+4) = 91
+
+    @(x+n/2) = 100
+
+    return max(x, n)
 }

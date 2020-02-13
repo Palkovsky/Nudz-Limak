@@ -98,16 +98,33 @@ pub struct ReturnExprAST {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum ArrayDeclarationExprAST {
+    BySize(ValuelikeExprAST),
+    ByElements(Vec<ValuelikeExprAST>)
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum DeclarationRHSExprAST {
+    Valuelike(ValuelikeExprAST),
+    Array(ArrayDeclarationExprAST)
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeclarationExprAST {
     pub ident: IdentifierExprAST,
     pub ty: TypeExprAST,
-    pub value: ValuelikeExprAST
+    pub value: DeclarationRHSExprAST
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct PtrWriteExprAST {
+    pub target: ValuelikeExprAST
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum WritableExprAST {
     Variable(IdentifierExprAST),
-    PtrWrite(UnaryOpExprAST)
+    PtrWrite(PtrWriteExprAST)
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -284,7 +301,7 @@ impl ASTNode for PrimitiveTypeExprAST {
 
 impl ASTNode for PtrTypeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        SingleTokenExprAST::expect(Token::BIN_OP(BinOp::MUL), input)?;
+        SingleTokenExprAST::expect(Token::UNARY_OP(UnaryOp::DEREF), input)?;
         let pointee = PrimitiveTypeExprAST::run_parser(input)?;
         Ok( Self { pointee: pointee })
     }
@@ -315,10 +332,6 @@ impl ASTNode for UnaryOpExprAST {
             Some(Token::UNARY_OP(op)) => {
                 let expr = BinOpAtomAST::run_parser(input)?;
                 Ok(Self {op: op, expr: expr.valuelike()})
-            },
-            Some(Token::BIN_OP(BinOp::MUL)) => {
-                let expr = BinOpAtomAST::run_parser(input)?;
-                Ok(Self {op: UnaryOp::DEREF, expr: expr.valuelike()})
             },
             Some(Token::BIN_OP(BinOp::SUB)) => {
                 let expr = BinOpAtomAST::run_parser(input)?;
@@ -558,6 +571,49 @@ impl ASTNode for ValuelikeExprAST {
     }
 }
 
+impl ASTNode for ArrayDeclarationExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        SingleTokenExprAST::expect(Token::BRACKET_OP, input)?;
+
+        let mut items = Vec::new();
+        loop {
+            items.push(ValuelikeExprAST::run_parser(input)?);
+
+            match input.next() {
+                Some(Token::COMMA) => {},
+                Some(Token::BRACKET_CL) =>
+                    break,
+                _ =>
+                    return Err(ParserError::from(format!("Expected array declaration.")))
+            }
+        }
+
+        match &items[..] {
+            [] => {
+                Err(ParserError::from(format!("Empty array declaration.")))
+            },
+            [valuelike] => {
+                Ok(Self::BySize(valuelike.clone()))
+            },
+            _ => {
+                Ok(Self::ByElements(items) )
+            }
+        }
+    }
+}
+
+impl ASTNode for DeclarationRHSExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        if let Ok(array) = ArrayDeclarationExprAST::run_parser(input) {
+            Ok(Self::Array(array))
+        } else if let Ok(valuelike) = ValuelikeExprAST::run_parser(input) {
+            Ok(Self::Valuelike(valuelike))
+        } else {
+            Err(ParserError::from(format!("Expected declaration RHS.")))
+        }
+    }
+}
+
 impl ASTNode for DeclarationExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         SingleTokenExprAST::expect(Token::LET, input)?;
@@ -567,7 +623,7 @@ impl ASTNode for DeclarationExprAST {
 
         match input.next() {
             Some(Token::ASSIGNMENT) => {
-                let value = ValuelikeExprAST::run_parser(input)?;
+                let value = DeclarationRHSExprAST::run_parser(input)?;
                 Ok(Self { ident: ident, ty: ty, value: value })
             },
             next => {
@@ -577,14 +633,27 @@ impl ASTNode for DeclarationExprAST {
     }
 }
 
+impl ASTNode for PtrWriteExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        SingleTokenExprAST::expect(Token::UNARY_OP(UnaryOp::DEREF), input)?;
+        let valuelike = if let Ok(paren) = ParenExprAST::run_parser(input) {
+            paren.body
+        } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
+            ValuelikeExprAST::Variable(ident)
+        } else {
+            return Err(ParserError::from("Expected *(...)"))
+        };
+
+        Ok(Self { target: valuelike })
+    }
+}
+
 impl ASTNode for WritableExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(ident) = IdentifierExprAST::run_parser(input) {
+        if let Ok(ptrwrite) = PtrWriteExprAST::run_parser(input) {
+            return Ok(Self::PtrWrite(ptrwrite))
+        } else if let Ok(ident) = IdentifierExprAST::run_parser(input) {
             return Ok(Self::Variable(ident));
-        } else if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
-            if unary.op == UnaryOp::DEREF {
-                return Ok(Self::PtrWrite(unary))
-            }
         }
         Err(ParserError::from(format!("Expected writable got '{:?}'.", input.peek1())))
     }
