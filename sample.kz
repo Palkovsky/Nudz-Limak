@@ -1,6 +1,6 @@
-def max(arr: @int, size: int) -> int {
-   let i: int = 0
-   let max: @int = arr
+def max(arr: @long, size: long) -> long {
+   let i: long = 0
+   let max: @long = arr
    while i < size {
      if @(arr+i) > @max {
         max = arr+i
@@ -10,8 +10,8 @@ def max(arr: @int, size: int) -> int {
    return @max
 }
 
-def zeroed(arr: @int, size: int) -> () {
-    let i: int = 0
+def zeroed(arr: @long, size: long) -> () {
+    let i: long = 0
     while i < size {
       @(arr+i) = 0
       i = i+1
@@ -20,11 +20,11 @@ def zeroed(arr: @int, size: int) -> () {
 
 # This creates 2D array with consecutive
 # natural numbers on the diagonal.
-def ptrs(n: int, j: int) -> int {
-    let x: @@int = [n]
-    let i: int = 0
+def ptrs(n: long, j: long) -> long {
+    let x: @@long = [n]
+    let i: long = 0
     while i < n {
-      let y: @int = [n]
+      let y: @long = [n]
       zeroed(y, n)
       @(y+i) = i+1
       @(x+i) = y
@@ -34,9 +34,9 @@ def ptrs(n: int, j: int) -> int {
 }
 
 
-def main() -> int {
-    let n: int = 50
-    let x: @int = [n]
+def main() -> long {
+    let n: long = 50
+    let x: @long = [n]
 
     zeroed(x, n)
 
