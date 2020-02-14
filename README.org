@@ -1,0 +1,5 @@
+# Running
+
+#+begin_src bash
+cat <source> | cargo run
+#+end_src
