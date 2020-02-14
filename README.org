@@ -5,4 +5,39 @@ cat <source> | cargo run
 #+end_src
 
 ** Sample
-   #+INCLUDE: "./sample.kz"
+   #+begin_src  
+   def max(arr: @int, size: int) -> int {
+      let i: int = 0
+      let max: @int = arr
+      while i < size {
+        if @(arr+i) > @max {
+           max = arr+i
+        }
+        i = i+1
+      } 
+      return @max
+   }
+
+   def zeroed(arr: @int, size: int) -> () {
+       let i: int = 0
+       while i < size {
+         @(arr+i) = 0
+         i = i+1
+       }
+   }
+   
+   def main() -> int {
+    let n: int = 50
+    let x: @int = [n]
+
+    zeroed(x, n)
+
+    @(x+0) = 70
+    @(x+10) = 2
+    @(x+22) = 10
+    @(x+33) = 89
+    @(x+44) = 91
+    
+    return max(x, n)
+   }
+   #+end_src
