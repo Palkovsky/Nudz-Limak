@@ -1,9 +1,11 @@
 /target
 **/*.rs.bk
 
-
 lexer/target
-lexer/**/*.rs.bk
+lexer/target
+
+llvm-rs/target
+llvm-rs/**/*.rs.bk
 
 cfg/target
 cfg/**/*.rs.bk

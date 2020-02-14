@@ -137,10 +137,8 @@ impl<'r> FuncMeta<'r> {
 
         let arrname = name.as_ref();
         let arr_ptr = builder.build_array_alloca(ty, &size);
-
         // alloca is pointer to first element on stack
         // we need to store ptr to ptr on stack
-
         self.mk_local_var(arrname, arr_ptr.get_type(), Some(mk_rcbox(arr_ptr)))
     }
 
@@ -692,7 +690,6 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 match &decl.value {
                     DeclarationRHSExprAST::Valuelike(valuelike) => {
                         let valuelike = valuelike.gencode(ctx);
-                        println!("RHS: {:?}", valuelike);
                         parenfunc.borrow_mut().mk_local_var(name, &ty, Some(valuelike))
                     },
 
@@ -949,7 +946,6 @@ impl<'r> Stubgen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
             .collect::<Vec<RcBox<llvm::Type>>>();
 
         let ret_type = prot.ret_type.gencode(ctx);
-        println!("Return type: {:?}", ret_type);
         let sig = llvm::FunctionType::new(&ret_type, &mk_slice(&arg_types)[..]);
 
         ctx.mk_func(funcname.clone(), arg_names, sig)
@@ -1054,8 +1050,6 @@ fn execute<'r>(ctx: &Context<'r>) -> i32 {
 
 pub fn gencode(root: &RootExprAST) -> (String, impl Fn() -> i32) {
     let mut ctx = Context::new();
-
     root.gencode(&mut ctx);
-
     (disasm(&ctx), move || execute(&ctx))
 }
