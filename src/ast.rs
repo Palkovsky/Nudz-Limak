@@ -30,7 +30,10 @@ pub struct IdentifierExprAST {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum PrimitiveTypeExprAST {
+    Byte,
     Int,
+    Short,
+    Long,
     Void
 }
 
@@ -284,7 +287,10 @@ impl ASTNode for PrimitiveTypeExprAST {
         match input.next() {
             Some(Token::IDENT(x)) => {
                 match x.as_str() {
-                    "int" => Ok(Self::Int),
+                    "byte"  => Ok(Self::Byte),
+                    "short" => Ok(Self::Short),
+                    "long"  => Ok(Self::Long),
+                    "int"   => Ok(Self::Int),
                     _ => {
                         let err = format!("Expected type specification. Got {:?}", x);
                         Err(ParserError::from(err))

@@ -1,11 +1,11 @@
-pub mod token;
-use token::mk_tokens;
-
-pub mod ast;
-use ast::mk_ast;
-
+mod token;
+mod ast;
+mod utils;
+mod types;
 mod codegen;
 
+use token::mk_tokens;
+use ast::mk_ast;
 use std::io::{self, Read};
 
 fn main() -> () {

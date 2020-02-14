@@ -1,17 +1,16 @@
 extern crate llvm;
 
 use super::ast::*;
+use super::utils::*;
 use super::token::*;
+use super::types::*;
 
 use std::process::Command;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 // llvm-rs docs:
 // https://tombebbington.github.io/llvm-rs/llvm/index.html
 use llvm::{
-    CSemiBox,
     BasicBlock,
     Value,
     Function,
@@ -20,38 +19,6 @@ use llvm::{
 };
 
 const MOD_NAME: &'static str = "llvm-tut";
-
-type RcBox<T> = Rc<Box<T>>;
-type RcRef<T> = Rc<RefCell<T>>;
-type RcSemiBox<'r, T> = Rc<CSemiBox<'r, T>>;
-
-/*
- * Nasty stuff
- */
-fn mk_box<T>(value: &T) -> Box<T> {
-    let ptr = (value as *const T) as usize;
-    unsafe { Box::from_raw(ptr as *mut T) }
-}
-
-fn mk_rcbox<T>(value: &T) -> RcBox<T> {
-    let boxed = mk_box(value);
-    Rc::new(boxed)
-}
-
-fn mk_rcref<T>(value: T) -> RcRef<T> {
-    Rc::new(RefCell::new(value))
-}
-
-fn mk_slice<T>(vec: &Vec<RcBox<T>>) -> Vec<&T> {
-    unsafe {
-        let ptrs = vec
-            .iter()
-            .map(|item| item.as_ref().as_ref() as *const T)
-            .map(|ptr| ptr.as_ref().unwrap())
-            .collect::<Vec<&T>>();
-        ptrs
-    }
-}
 
 struct FuncMeta<'r> {
     builder:  RcSemiBox<'r, llvm::Builder>,
@@ -685,7 +652,7 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
 
             InBlockExprAST::Declaration(decl) => {
                 let ref name = decl.ident.name;
-                let ty = decl.ty.gencode(ctx);
+                let ty = decl.ty.gencode(ctx).as_llvm(ctx.llvm_ctx.clone());
 
                 match &decl.value {
                     DeclarationRHSExprAST::Valuelike(valuelike) => {
@@ -711,7 +678,7 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                     },
 
                     DeclarationRHSExprAST::Array(
-                        ArrayDeclarationExprAST::ByElements(elems)
+                        ArrayDeclarationExprAST::ByElements(_)
                     ) => {
                         panic!("By element decl not supported yet.")
                     }
@@ -845,28 +812,29 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
     }
 }
 
-impl<'r> Codegen<'r, RcBox<llvm::Type>> for PrimitiveTypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<llvm::Type> {
-        let ty = match self {
-            Self::Int =>
-                llvm::Type::get::<i64>(&ctx.llvm_ctx),
-            Self::Void =>
-                llvm::Type::get::<()>(&ctx.llvm_ctx),
+impl<'r> Codegen<'r, RcBox<dyn Typed>> for PrimitiveTypeExprAST {
+    fn gencode(&self, _: &mut Context<'r>) -> RcBox<dyn Typed> {
+        let ty: Box<dyn Typed> = match self {
+            Self::Byte  => Box::new(Byte),
+            Self::Short => Box::new(Short),
+            Self::Int   => Box::new(Int),
+            Self::Long  => Box::new(Long),
+            Self::Void  => Box::new(Void),
         };
-        mk_rcbox(ty)
+        Rc::new(ty)
     }
 }
 
-impl<'r> Codegen<'r, RcBox<llvm::Type>> for PtrTypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<llvm::Type> {
+impl<'r> Codegen<'r, RcBox<dyn Typed>> for PtrTypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<dyn Typed> {
         let ty = self.pointee.gencode(ctx);
-        let ptr_ty = llvm::PointerType::new(&ty);
-        mk_rcbox(ptr_ty)
+        let ptr_ty = Ptr::new(ty);
+        Rc::new(Box::new(ptr_ty))
     }
 }
 
-impl<'r> Codegen<'r, RcBox<llvm::Type>> for TypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<llvm::Type> {
+impl<'r> Codegen<'r, RcBox<dyn Typed>> for TypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<dyn Typed> {
         match self {
             TypeExprAST::Primitive(primitive) =>
                 primitive.gencode(ctx),
@@ -942,12 +910,17 @@ impl<'r> Stubgen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
             .collect::<Vec<String>>();
 
         let arg_types = prot.args.iter()
-            .map(|(_, ty)| ty.gencode(ctx))
+            .map(|(_, ty)| {
+                let typed = ty.gencode(ctx);
+                typed.as_llvm(ctx.llvm_ctx.clone())
+            })
             .collect::<Vec<RcBox<llvm::Type>>>();
 
-        let ret_type = prot.ret_type.gencode(ctx);
-        let sig = llvm::FunctionType::new(&ret_type, &mk_slice(&arg_types)[..]);
+        let ret_type = prot.ret_type
+            .gencode(ctx)
+            .as_llvm(ctx.llvm_ctx.clone());
 
+        let sig = llvm::FunctionType::new(&ret_type, &mk_slice(&arg_types)[..]);
         ctx.mk_func(funcname.clone(), arg_names, sig)
     }
 }
