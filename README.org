@@ -1,4 +1,4 @@
-# Running
+* Running
 
 #+begin_src bash
 cat <source> | cargo run
