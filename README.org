@@ -1,5 +1,8 @@
-* Running
+** Running
 
 #+begin_src bash
 cat <source> | cargo run
 #+end_src
+
+** Sample
+   #+INCLUDE: "./sample.kz"
