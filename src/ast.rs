@@ -36,7 +36,7 @@ pub enum PrimitiveTypeExprAST {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PtrTypeExprAST {
-    pub pointee: PrimitiveTypeExprAST
+    pub pointee: Box<TypeExprAST>
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -302,8 +302,8 @@ impl ASTNode for PrimitiveTypeExprAST {
 impl ASTNode for PtrTypeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         SingleTokenExprAST::expect(Token::UNARY_OP(UnaryOp::DEREF), input)?;
-        let pointee = PrimitiveTypeExprAST::run_parser(input)?;
-        Ok( Self { pointee: pointee })
+        let pointee = TypeExprAST::run_parser(input)?;
+        Ok( Self { pointee: Box::new(pointee) })
     }
 }
 
