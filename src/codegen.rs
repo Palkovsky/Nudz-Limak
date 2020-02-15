@@ -202,7 +202,7 @@ impl<'r> FuncMeta<'r> {
     {
         if value.ty() != self.ret_ty {
             panic!(
-                "set_retval(): Tried setting invalid type {:?} != {:?}.",
+                "set_retval(): Tried setting invalid type. Got: '{:?}, expected '{:?}'.",
                 value.ty(), self.ret_ty
             );
         }
@@ -495,6 +495,7 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
             ValuelikeExprAST::NumericLiteral(num) => {
                 num.gencode(ctx)
             },
+
             ValuelikeExprAST::Variable(ident) => {
                 let ref key = ident.name;
                 if let Some(val) = ctx.variable(key) {
@@ -503,6 +504,16 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
                     panic!("'{}' not found.", key)
                 }
             },
+
+            ValuelikeExprAST::Casted(cast) => {
+                let value = cast.value.gencode(ctx);
+                let cast_ty = cast.target_ty.gencode(ctx);
+                let casted = value.clone()
+                    .cast(cast_ty.clone())
+                    .unwrap_or_else(|| panic!("Unable to cast '{:?}' as {:?}", &value.ty(), cast_ty));
+                Rc::new(casted)
+            },
+
             ValuelikeExprAST::Call(call) => {
                 let ref name = call.name.name;
                 let funcmeta = {
@@ -534,34 +545,48 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
                     ).unwrap()
                 )
             },
-            ValuelikeExprAST::BinExpression(binexpr) =>
-                binexpr.gencode(ctx),
-            ValuelikeExprAST::UnaryExpression(unary) =>
+
+            ValuelikeExprAST::BinExpression(binexpr) => {
+                binexpr.gencode(ctx)
+            },
+
+            ValuelikeExprAST::UnaryExpression(unary) => {
                 unary.gencode(ctx)
+            }
         }
     }
 }
 
 impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for BinOpExprAST {
     fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
-        let ref lhs = self.lhs.gencode(ctx);
-        let ref rhs = self.rhs.gencode(ctx);
-        let ref builder = ctx.builder();
-
+        let mut lhs = self.lhs.gencode(ctx);
+        let mut rhs = self.rhs.gencode(ctx);
         let lhs_ty = lhs.ty();
         let rhs_ty = rhs.ty();
 
         // Detect if we're dealing with pointer arithmetic.
         let ptr_artih = lhs_ty.is_pointer() && rhs_ty.is_integer();
 
-        // panic when types don't match
-        if !ptr_artih && lhs_ty != rhs_ty {
-            panic!("Operation '{:?}' on types '{:?}' and '{:?}'.",
-                   self.op, lhs_ty, rhs_ty);
+        // If adding two integers of different sizes, cast smaller one to bigger one.
+        if lhs_ty != rhs_ty && !ptr_artih {
+            if lhs_ty.is_integer() && rhs_ty.is_integer() {
+                if lhs_ty.size() > rhs_ty.size() {
+                    rhs = Rc::new(rhs.cast(lhs_ty.clone()).unwrap());
+                } else {
+                    lhs = Rc::new(lhs.cast(rhs_ty.clone()).unwrap());
+                }
+            } else {
+                panic!("Operation '{:?}' on types '{:?}' and '{:?}'.",
+                       self.op, lhs_ty, rhs_ty);
+            }
         }
 
+        let builder = ctx.builder();
+        let lhs_ty = lhs.ty();
+        let rhs_ty = rhs.ty();
         let ref lhs = lhs.llvm();
         let ref rhs = rhs.llvm();
+
 
         let (value, ty) = match self.op {
             BinOp::ADD => {
@@ -572,6 +597,7 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for BinOpExprAST {
                 };
                 (val, lhs_ty)
             },
+
             BinOp::SUB => {
                 let neg_rhs = builder.build_neg(rhs);
                 let val = if ptr_artih {
@@ -581,33 +607,45 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for BinOpExprAST {
                 };
                 (val, lhs_ty)
             },
+
             BinOp::MUL =>
                 (builder.build_mul(lhs, rhs), lhs_ty),
+
             BinOp::DIV =>
                 (builder.build_div(lhs, rhs), lhs_ty),
+
             BinOp::MOD =>
                 panic!("No modulo for now"),
+
             BinOp::AND =>
                 (builder.build_and(lhs, rhs), lhs_ty),
+
             BinOp::OR =>
                 (builder.build_or(lhs, rhs), lhs_ty),
+
             BinOp::BIT_AND | BinOp::BIT_OR =>
                 panic!("No bitwise AND and OR."),
+
             BinOp::LT =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::LessThan),
                  LangType::Bool),
+
             BinOp::LTE =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::LessThanOrEqual),
                  LangType::Bool),
+
             BinOp::GT =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThan),
                  LangType::Bool),
+
             BinOp::GTE =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThanOrEqual),
                  LangType::Bool),
+
             BinOp::EQ =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::Equal),
                  LangType::Bool),
+
             BinOp::NON_EQ =>
                 (builder.build_cmp(lhs, rhs, llvm::Predicate::NotEqual),
                  LangType::Bool)
@@ -753,7 +791,7 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 match &decl.value {
                     DeclarationRHSExprAST::Valuelike(valuelike) => {
                         let valuelike = valuelike.gencode(ctx);
-                        let casted = valuelike.cast(ty.clone());
+                        let casted = valuelike.clone().cast(ty.clone());
                         // Try to implicitly cast value to target type
                         if let Some(casted) = casted {
                             parenfunc.borrow_mut().mk_local_var(name, Rc::new(casted))
@@ -787,25 +825,30 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
             InBlockExprAST::ReDeclaration(redecl) => {
                 let valuelike = redecl.value.gencode(ctx);
                 match &redecl.target {
-                    // In this case it should create new local varaible.
                     WritableExprAST::Variable(ident) => {
                         let ref name = ident.name;
-                        let local_ptr = ctx.local_ptr(name).unwrap_or_else(
-                            || panic!("Redeclaration of '{}'. No such name in current scope.",
-                                      name));
+                        let local_ptr = ctx.local_ptr(name)
+                            .unwrap_or_else(|| panic!("Redeclaration of '{}'. No such name in current scope.", name));
 
-                        assert!(local_ptr.ty().is_pointer());
-
-                        let builder = ctx.builder();
-                        builder.build_store(&valuelike.llvm(), &local_ptr.llvm());
+                        if let LangType::Ptr(pointee_ty) = local_ptr.ty() {
+                            let builder = ctx.builder();
+                            // Try to cast valuelike to pointee_ty
+                            let casted = valuelike.cast(*pointee_ty.clone())
+                                .unwrap_or_else(|| panic!("Redeclaration: unable to cast to '{:?}'.", pointee_ty));
+                            builder.build_store(&casted.llvm(), &local_ptr.llvm());
+                        } else {
+                            panic!("Redeclaration: LHS {:?} was expected to be a pointer.", valuelike.llvm());
+                        }
                     },
-                    // 1. Evaluate body of deref and make sure it's a pointer.
-                    // 2. Write evaluated value into target address.
+
                     WritableExprAST::PtrWrite(deref) => {
                         let target_ptr = deref.target.gencode(ctx);
-                        if let LangType::Ptr(_) = target_ptr.ty() {
+                        if let LangType::Ptr(pointee_ty) = target_ptr.ty() {
                             let builder = ctx.builder();
-                            builder.build_store(&valuelike.llvm(), &target_ptr.llvm());
+                            // Try to cast valuelike to pointee_ty
+                            let casted = valuelike.cast(*pointee_ty.clone())
+                                .unwrap_or_else(|| panic!("PtrWrite: unable to cast to '{:?}'.", pointee_ty));
+                            builder.build_store(&casted.llvm(), &target_ptr.llvm());
                         } else {
                             panic!("PtrWrite: {:?} was expected to be a pointer.", deref.target);
                         }
@@ -1041,7 +1084,12 @@ impl<'r> Stubgen<'r, ()> for OutBlockExprAST {
 
                 if let DeclarationRHSExprAST::Valuelike(valuelike) = value {
                     let valuelike = valuelike.gencode(ctx);
-                    ctx.mk_global_var(name, valuelike);
+                    let ty = decl.ty.gencode(ctx);
+                    // Cast valuelike to variable type
+                    let casted = valuelike.clone().cast(ty.clone())
+                        .unwrap_or_else(|| panic!("Tried declaring '{}' as {:?}, but value is {:?}",
+                                                  name, ty, valuelike.ty()));
+                    ctx.mk_global_var(name, Rc::new(casted));
                 }
             },
             OutBlockExprAST::FuncDef(funcdef) => {

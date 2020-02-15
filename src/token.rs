@@ -46,6 +46,7 @@ pub enum Token {
     ELSE,
     WHILE,
     ARROW,
+    AS,
     RETURN,
     ASSIGNMENT,
     PAREN_OP,
@@ -188,6 +189,10 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
                 => LexStatus::Request,
             "if " | "if("
                 => LexStatus::TokenWithDrop(Token::IF),
+            "a" | "as"
+                => LexStatus::Request,
+            "as "
+                => LexStatus::TokenWithDrop(Token::AS),
             "e" | "el" | "els" | "else"
                 => LexStatus::Request,
             "else " | "else{"

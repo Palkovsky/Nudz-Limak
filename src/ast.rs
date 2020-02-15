@@ -81,7 +81,14 @@ pub struct ParenExprAST {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct CastExprAST {
+    pub value: ValuelikeExprAST,
+    pub target_ty: TypeExprAST
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum ValuelikeExprAST {
+    Casted(Box<CastExprAST>),
     NumericLiteral(NumLiteralExprAST),
     BinExpression(Box<BinOpExprAST>),
     UnaryExpression(Box<UnaryOpExprAST>),
@@ -546,6 +553,16 @@ impl ASTNode for ReturnExprAST {
     }
 }
 
+impl ASTNode for CastExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        println!("HIR: {:?}", input.peek(5));
+        let cast_value = BinOpAtomAST::run_parser(input)?;
+        SingleTokenExprAST::expect(Token::AS, input)?;
+        let target_ty = TypeExprAST::run_parser(input)?;
+        Ok(Self { value: cast_value.valuelike(), target_ty: target_ty})
+    }
+}
+
 impl ValuelikeExprAST {
     // This should be more complex.
     // It should for example accept binary/unary epxpressions of literals.
@@ -559,7 +576,9 @@ impl ValuelikeExprAST {
 
 impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(expr) = BinOpExprAST::run_parser(input) {
+        if let Ok(casted) = CastExprAST::run_parser(input) {
+            Ok(Self::Casted(Box::new(casted)))
+        } else if let Ok(expr) = BinOpExprAST::run_parser(input) {
             Ok(Self::BinExpression(Box::new(expr)))
         } else if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
             Ok(Self::UnaryExpression(Box::new(unary)))

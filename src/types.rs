@@ -49,7 +49,6 @@ impl LangType {
             Self::Ptr(pointee) => {
                 let llvm_ty = pointee.as_llvm(ctx);
                 mk_rcbox(llvm::PointerType::new(&llvm_ty))
-
             }
         }
     }
@@ -70,6 +69,17 @@ impl LangType {
         match self {
             Self::Byte | Self::Short | Self::Int | Self::Long => true,
             _ => false
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Void   => 0,
+            Self::Bool   => 1,
+            Self::Byte   => 8,
+            Self::Short  => 16,
+            Self::Int    => 32,
+            Self::Long | Self::Ptr(_) => 64
         }
     }
 }
@@ -109,7 +119,7 @@ impl<'r> TypedValue<'r> {
         self.ty.clone()
     }
 
-    fn trunc_to(&self, ty: LangType) -> Option<TypedValue> {
+    fn trunc_to(self: Rc<Self>, ty: LangType) -> Option<Self> {
         let trunced = self.builder.build_trunc(
             self.llvm().as_ref(),
             &ty.as_llvm(self.ctx.clone())
@@ -118,11 +128,11 @@ impl<'r> TypedValue<'r> {
             self.ctx.clone(),
             self.builder.clone(),
             mk_rcbox(trunced),
-            LangType::Byte
+            ty
         ).ok()
     }
 
-    fn extend_to(&self, ty: LangType) -> Option<TypedValue> {
+    fn extend_to(self: Rc<Self>, ty: LangType) -> Option<Self> {
         let extended = self.builder.build_zext(
             self.llvm().as_ref(),
             &ty.as_llvm(self.ctx.clone())
@@ -131,11 +141,11 @@ impl<'r> TypedValue<'r> {
             self.ctx.clone(),
             self.builder.clone(),
             mk_rcbox(extended),
-            LangType::Byte
-        ).ok()
+            ty
+        ).map_err(|err| { println!("{}", err); () }).ok()
     }
 
-    pub fn cast(&self, target: LangType) -> Option<TypedValue> {
+    pub fn cast(self: Rc<Self>, target: LangType) -> Option<Self> {
         match target {
             LangType::Byte   => self.cast_as_byte(),
             LangType::Short  => self.cast_as_short(),
@@ -148,7 +158,7 @@ impl<'r> TypedValue<'r> {
         }
     }
 
-    pub fn cast_as_byte(&self) -> Option<TypedValue> {
+    pub fn cast_as_byte(self: Rc<Self>) -> Option<Self> {
         match self.ty() {
             // Void/ptr to byte seems weird
             LangType::Void | LangType::Ptr(_) | LangType::Bool => None,
@@ -166,7 +176,7 @@ impl<'r> TypedValue<'r> {
         }
     }
 
-    pub fn cast_as_short(&self) -> Option<TypedValue> {
+    pub fn cast_as_short(self: Rc<Self>) -> Option<Self> {
         match self.ty() {
             // Void/ptr to byte seems weird
             LangType::Void | LangType::Ptr(_) | LangType::Bool =>
@@ -188,7 +198,7 @@ impl<'r> TypedValue<'r> {
         }
     }
 
-    pub fn cast_as_int(&self) -> Option<TypedValue> {
+    pub fn cast_as_int(self: Rc<Self>) -> Option<Self> {
         match self.ty() {
             // Void/ptr to byte seems weird
             LangType::Void | LangType::Ptr(_) | LangType::Bool =>
@@ -210,7 +220,7 @@ impl<'r> TypedValue<'r> {
         }
     }
 
-    pub fn cast_as_long(&self) -> Option<TypedValue> {
+    pub fn cast_as_long(self: Rc<Self>) -> Option<Self> {
         match self.ty() {
             // Void/ptr to byte seems weird
             LangType::Void | LangType::Bool =>
@@ -229,8 +239,9 @@ impl<'r> TypedValue<'r> {
                 ).ok()
             },
             // Extend to long
-            LangType::Byte | LangType::Short | LangType::Int =>
-                self.extend_to(LangType::Long),
+            LangType::Byte | LangType::Short | LangType::Int => {
+                self.extend_to(LangType::Long)
+            },
             // Do nothing
             LangType::Long =>
                 TypedValue::new(
@@ -242,7 +253,7 @@ impl<'r> TypedValue<'r> {
         }
     }
 
-    pub fn cast_as_ptr(&self, pointee: LangType) -> Option<TypedValue> {
+    pub fn cast_as_ptr(self: Rc<Self>, pointee: LangType) -> Option<Self> {
         let target_ty = LangType::Ptr(Box::new(pointee));
 
         match self.ty() {
