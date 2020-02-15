@@ -815,9 +815,41 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                     },
 
                     DeclarationRHSExprAST::Array(
-                        ArrayDeclarationExprAST::ByElements(_)
+                        ArrayDeclarationExprAST::ByElements(elems)
                     ) => {
-                        panic!("By element decl not supported yet.")
+                        if let LangType::Ptr(pointee_ty) = ty {
+                            let values = elems
+                                .into_iter()
+                                .map(|elem| elem.gencode(ctx))
+                                .collect::<Vec<Rc<TypedValue>>>();
+
+                            let len_value = (values.len() as i64).compile(&ctx.llvm_ctx);
+                            let size = Rc::new(TypedValue::new(
+                                ctx.llvm_ctx.clone(), ctx.builder().clone(),
+                                mk_rcbox(len_value), LangType::Long
+                            ).unwrap());
+
+                            let arr = parenfunc.borrow_mut().mk_local_arr(name, *pointee_ty.clone(), size);
+                            let arr_d = ctx.deref_ptr(arr.clone());
+
+                            // Populate newly created array with values
+                            let builder = ctx.builder();
+                            for i in 0..values.len() {
+                                let offset = (i as i64).compile(&ctx.llvm_ctx);
+                                let item_ptr = builder.build_gep(&arr_d.llvm(), &[offset]);
+                                let value = values.get(i).unwrap().clone();
+
+                                let casted = value
+                                    .cast(*pointee_ty.clone())
+                                    .unwrap_or_else(|| panic!("ByElements array declaration. Unable to cast to var type."));
+
+                                builder.build_store(&casted.llvm(), item_ptr);
+                            }
+
+                            arr
+                        } else {
+                            panic!("Array declaration should always be a pointer type.")
+                        }
                     }
                 };
             },

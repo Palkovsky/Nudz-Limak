@@ -24,6 +24,11 @@ pub struct NumLiteralExprAST {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct StringLiteralExprAST {
+    pub chars: Vec<u8>
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct IdentifierExprAST {
     pub name: String
 }
@@ -270,6 +275,21 @@ impl ASTNode for NumLiteralExprAST {
             Ok(Self { value: val as u64 })
         } else {
             Err(ParserError::from(format!("Expected numeric. Got {:?}", next)))
+        }
+    }
+}
+
+impl ASTNode<ArrayDeclarationExprAST> for StringLiteralExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<ArrayDeclarationExprAST, ParserError> {
+        match input.next() {
+            Some(Token::STRING(chars)) => {
+                let elements = chars
+                    .into_iter()
+                    .map(|chr| ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: chr as u64}))
+                    .collect::<Vec<ValuelikeExprAST>>();
+                Ok(ArrayDeclarationExprAST::ByElements(elements))
+            },
+            _ => Err(ParserError::from("Expected string literal."))
         }
     }
 }
@@ -555,7 +575,6 @@ impl ASTNode for ReturnExprAST {
 
 impl ASTNode for CastExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        println!("HIR: {:?}", input.peek(5));
         let cast_value = BinOpAtomAST::run_parser(input)?;
         SingleTokenExprAST::expect(Token::AS, input)?;
         let target_ty = TypeExprAST::run_parser(input)?;
@@ -598,6 +617,11 @@ impl ASTNode for ValuelikeExprAST {
 
 impl ASTNode for ArrayDeclarationExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
+        // Check for string-like array definition
+        if let Ok(str_arr) = StringLiteralExprAST::run_parser(input) {
+            return Ok(str_arr)
+        }
+
         SingleTokenExprAST::expect(Token::BRACKET_OP, input)?;
 
         let mut items = Vec::new();

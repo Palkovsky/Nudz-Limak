@@ -60,6 +60,7 @@ pub enum Token {
     IDENT(String),
     BIN_OP(BinOp),
     UNARY_OP(UnaryOp),
+    STRING(Vec<u8>),
     NUM(f64)
 }
 
@@ -132,6 +133,52 @@ pub fn mk_tokens(input: String) -> Result<VecStream<Token>, TokenzierError> {
             "/"  => LexStatus::Token(Token::BIN_OP(BinOp::DIV)),
             "%"  => LexStatus::Token(Token::BIN_OP(BinOp::MOD)),
             _    => LexStatus::Fail
+        }
+    });
+
+    // String, this doesn't support escaping.
+    ts.rule(&|chunk, _| {
+        let mut chars = chunk
+            .chars()
+            .collect::<Vec<char>>();
+
+        let first = *chars.first().unwrap();
+        let last = *chars.last().unwrap();
+
+        match (first, last, chunk.len()) {
+            ('"', '"', 1) => LexStatus::Request,
+            ('"', '"', l) if l >= 2 => {
+                let chunk = &mut chars[1..l-1].iter()
+                    .map(|chr| *chr as u8)
+                    .collect::<Vec<u8>>();
+
+                // Null termination
+                chunk.push(0);
+
+                LexStatus::Token(Token::STRING(chunk.clone()))
+            },
+            ('"', _, _) => LexStatus::Request,
+            _ => LexStatus::Fail
+        }
+    });
+
+    // ASCII Char
+    ts.rule(&|chunk, _| {
+        let chars = chunk
+            .chars()
+            .collect::<Vec<char>>();
+        let first = *chars.first().unwrap();
+        let last = *chars.last().unwrap();
+
+        match (first, last, chunk.len()) {
+            ('\'', '\'', 1) => LexStatus::Request,
+            ('\'', _, 2)    => LexStatus::Request,
+            ('\'', '\'', 3) => {
+                let chr = chars.get(1).unwrap();
+                let ascii = *chr as u8;
+                LexStatus::Token(Token::NUM(ascii as f64))
+            },
+            _ => LexStatus::Fail
         }
     });
 
