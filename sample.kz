@@ -36,7 +36,7 @@ def ptrs(n: long, j: long) -> long {
 }
 
 
-def main() -> long {
+def main() -> byte {
     let n: long = 50
     let x: @long = [n]
 
@@ -48,7 +48,7 @@ def main() -> long {
     @(x+33) = 89
     @(x+44) = 91
 
-    let b: byte = 21
-
-    return max(x, n) + glob + b
+    let b1: byte = 21
+    let b2: byte = max(x, n)+glob
+    return b1+b2
 }

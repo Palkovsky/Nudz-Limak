@@ -753,11 +753,14 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 match &decl.value {
                     DeclarationRHSExprAST::Valuelike(valuelike) => {
                         let valuelike = valuelike.gencode(ctx);
-                        if valuelike.ty() != ty {
+                        let casted = valuelike.cast(ty.clone());
+                        // Try to implicitly cast value to target type
+                        if let Some(casted) = casted {
+                            parenfunc.borrow_mut().mk_local_var(name, Rc::new(casted))
+                        } else {
                             panic!("Tried declaring '{}' as {:?}, but value is {:?}",
                                    name, ty, valuelike.ty());
                         }
-                        parenfunc.borrow_mut().mk_local_var(name, valuelike)
                     },
 
                     DeclarationRHSExprAST::Array(

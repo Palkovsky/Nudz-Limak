@@ -135,6 +135,19 @@ impl<'r> TypedValue<'r> {
         ).ok()
     }
 
+    pub fn cast(&self, target: LangType) -> Option<TypedValue> {
+        match target {
+            LangType::Byte   => self.cast_as_byte(),
+            LangType::Short  => self.cast_as_short(),
+            LangType::Int    => self.cast_as_int(),
+            LangType::Long   => self.cast_as_long(),
+            LangType::Ptr(pointee_ty) =>
+                self.cast_as_ptr(*pointee_ty),
+            LangType::Void | LangType::Bool =>
+                None
+        }
+    }
+
     pub fn cast_as_byte(&self) -> Option<TypedValue> {
         match self.ty() {
             // Void/ptr to byte seems weird
