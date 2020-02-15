@@ -1,3 +1,5 @@
+let glob: long = 1
+
 def max(arr: @long, size: long) -> long {
    let i: long = 0
    let max: @long = arr
@@ -45,6 +47,8 @@ def main() -> long {
     @(x+22) = 10
     @(x+33) = 89
     @(x+44) = 91
-    
-    return max(x, n)
+
+    let b: byte = 21
+
+    return max(x, n) + glob + b
 }

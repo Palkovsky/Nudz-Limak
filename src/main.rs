@@ -1,6 +1,7 @@
 mod token;
 mod ast;
 mod utils;
+#[macro_use]
 mod types;
 mod codegen;
 

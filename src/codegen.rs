@@ -3,6 +3,7 @@ extern crate llvm;
 use super::ast::*;
 use super::utils::*;
 use super::token::*;
+#[macro_use]
 use super::types::*;
 
 use std::process::Command;
@@ -21,21 +22,27 @@ use llvm::{
 const MOD_NAME: &'static str = "llvm-tut";
 
 struct FuncMeta<'r> {
+    ctx:      RcBox<llvm::Context>,
     builder:  RcSemiBox<'r, llvm::Builder>,
     func:     RcBox<Function>,
     blocks:   HashMap<String, RcBox<BasicBlock>>,
-    argnames: Vec<String>,
-    argptrs:  Vec<RcBox<Value>>,
+
+    argnames: Vec<(LangType, String)>,
+    argptrs:  Vec<Rc<TypedValue<'r>>>,
+    ret_ty:   LangType,
+
     preamb:   Option<RcBox<BasicBlock>>,
     drop:     Option<RcBox<BasicBlock>>,
-    retval:   Option<RcBox<Value>>,
-    scope:    Scope
+    retval:   Option<Rc<TypedValue<'r>>>,
+    scope:    Scope<'r>
 }
 
 impl<'r> FuncMeta<'r> {
     fn new(ctx: RcBox<llvm::Context>,
            func: &Function,
-           argnames: Vec<String>) -> Self
+           argnames: Vec<(LangType, String)>,
+           ret_ty: LangType
+    ) -> Self
     {
         let arity = argnames.len();
 
@@ -45,11 +52,15 @@ impl<'r> FuncMeta<'r> {
         });
 
         Self {
+            ctx: ctx.clone(),
             builder: Rc::new(builder),
             func: mk_rcbox(func),
             blocks: HashMap::new(),
+
             argnames: argnames,
             argptrs: Vec::with_capacity(arity),
+            ret_ty: ret_ty,
+
             preamb: None,
             drop: None,
             retval: None,
@@ -78,75 +89,89 @@ impl<'r> FuncMeta<'r> {
 
     fn mk_local_var(&mut self,
                     name: impl AsRef<str>,
-                    ty: &llvm::Type,
-                    def: Option<RcBox<Value>>) -> RcBox<Value>
+                    typed: Rc<TypedValue>) -> Rc<TypedValue<'r>>
     {
         let builder = self.builder.clone();
 
         let varname = name.as_ref();
-        let alloca = builder.build_alloca(ty);
+        let alloca = builder.build_alloca(&typed.ty().as_llvm(self.ctx.clone()));
 
-        if let Some(default) = def {
-            builder.build_store(&default, alloca);
-        }
+        builder.build_store(&typed.llvm(), alloca);
 
-        self.scope.add_local(varname, mk_rcbox(alloca));
+        let typed_val = TypedValue::new(
+            self.ctx.clone(), self.builder.clone(),
+            mk_rcbox(alloca), LangType::new_ptr(typed.ty())
+        ).unwrap();
+
+        self.scope.add_local(varname, Rc::new(typed_val));
         self.scope.local(varname).unwrap()
     }
 
     fn mk_local_arr(&mut self,
                     name: impl AsRef<str>,
-                    ty: &llvm::Type,
-                    size: RcBox<Value>) -> RcBox<Value>
+                    ty: LangType,
+                    size: Rc<TypedValue<'r>>) -> Rc<TypedValue<'r>>
     {
-
         let builder = self.builder.clone();
 
         let arrname = name.as_ref();
-        let arr_ptr = builder.build_array_alloca(ty, &size);
-        // alloca is pointer to first element on stack
-        // we need to store ptr to ptr on stack
-        self.mk_local_var(arrname, arr_ptr.get_type(), Some(mk_rcbox(arr_ptr)))
+        let arr_ptr = builder.build_array_alloca(&ty.as_llvm(self.ctx.clone()), &size.llvm());
+
+        let typed = Rc::new(TypedValue::new(
+            self.ctx.clone(), self.builder.clone(),
+            mk_rcbox(arr_ptr), LangType::new_ptr(ty)
+        ).unwrap());
+
+        self.mk_local_var(arrname, typed)
     }
 
-    fn mk_preamb(&mut self) -> RcBox<BasicBlock> {
-        let preamb_ident = format!("{}_preamb", self.name());
-        let preamb_block = self.mk_block(preamb_ident.clone());
-        self.builder.position_at_end(&preamb_block);
+    fn mk_preamb(this: RcRef<Self>) -> RcBox<BasicBlock> {
+        let mut this = this.borrow_mut();
 
-        let func = self.func.clone();
-        let signature = func.get_signature();
-        let arity = signature.num_params();
-        let arg_types = signature.get_params();
-        let ret_type = signature.get_return();
+        let preamb_ident = format!("{}_preamb", this.name());
+        let preamb_block = this.mk_block(preamb_ident.clone());
+        this.builder.position_at_end(&preamb_block);
+
+        let arity = this.argnames.len();
 
         // Allocate memory for arguments
-        (0..arity)
-            .zip(arg_types.into_iter())
-            .zip(self.argnames.clone().iter())
-            .for_each(|((i, ty), argname): ((usize, &llvm::Type), &String)| {
-                let argvalue = mk_rcbox(self.func[i].to_super());
-                let alloca = self.mk_local_var(
-                    argname,
-                    ty,
-                    Some(argvalue)
-                );
-                self.argptrs.push(alloca.clone());
-            });
+        for (i, (ty, argname)) in (0..arity).zip(this.argnames.clone().into_iter()) {
+            let argvalue = mk_rcbox(this.func[i].to_super());
+
+            let typed = TypedValue::new(
+                this.ctx.clone(), this.builder.clone(),
+                argvalue, ty
+            ).unwrap();
+
+            let alloca = this.mk_local_var(argname, Rc::new(typed));
+            this.argptrs.push(alloca);
+        }
 
         // Allocate memory for return value
-        self.retval = if ret_type.is_void() {
+        let ctx = this.ctx.clone();
+        let builder = this.builder.clone();
+        let ret_ty = this.ret_ty.clone();
+        let retval = if ret_ty.is_void() {
             None
         } else {
-            let ret_alloca = self.builder.build_alloca(ret_type);
-            Some(mk_rcbox(ret_alloca))
+            let ret_alloca = mk_rcbox(this.builder.build_alloca(
+                &ret_ty.as_llvm(ctx.clone())
+            ));
+            let typed = TypedValue::new(
+                ctx, builder,
+                ret_alloca, LangType::new_ptr(ret_ty)
+            ).unwrap();
+            Some(Rc::new(typed))
         };
 
+        this.retval = retval;
+
         // Update structure field
-        self.preamb = Some(preamb_block);
+        this.preamb = Some(preamb_block);
         // Return reference to newly created block
-        self.block(preamb_ident.clone()).unwrap()
+        this.block(preamb_ident.clone()).unwrap()
     }
+
 
     fn mk_drop(&mut self) -> RcBox<BasicBlock> {
         let drop_ident = format!("{}_drop", self.name());
@@ -157,12 +182,12 @@ impl<'r> FuncMeta<'r> {
         let signature = self.func.get_signature();
         let ret_type = signature.get_return();
 
-        // Deallocate and return retval
+        // Return retval
         if ret_type.is_void() {
             builder.build_ret_void();
         } else {
-            let ret_value_addr = self.retval.clone().unwrap();
-            let ret_value = builder.build_load(&ret_value_addr);
+            let ret_value = self.retval.clone().unwrap();
+            let ret_value = builder.build_load(&ret_value.llvm());
             builder.build_ret(ret_value);
         }
 
@@ -173,10 +198,17 @@ impl<'r> FuncMeta<'r> {
     }
 
     fn set_retval(&mut self,
-                  value: RcBox<Value>)
+                  value: Rc<TypedValue>)
     {
+        if value.ty() != self.ret_ty {
+            panic!(
+                "set_retval(): Tried setting invalid type {:?} != {:?}.",
+                value.ty(), self.ret_ty
+            );
+        }
+
         if let Some(ptr) = &self.retval {
-            self.builder.build_store(&value, &ptr);
+            self.builder.build_store(&value.llvm(), &ptr.llvm());
         } else {
             panic!("set_retval(): Tried setting retval in function '{}' without prioir allocation.",
                    self.name());
@@ -201,12 +233,12 @@ impl<'r> FuncMeta<'r> {
     }
 }
 
-struct Scope {
-    stack: Vec<HashMap<String, RcBox<Value>>>,
+struct Scope<'r> {
+    stack: Vec<HashMap<String, Rc<TypedValue<'r>>>>,
     touched: Vec<HashMap<String, bool>>
 }
 
-impl Scope {
+impl<'r> Scope<'r> {
     fn new() -> Self {
         Self {
             stack: vec![HashMap::new()],
@@ -219,7 +251,7 @@ impl Scope {
     }
 
     fn local(&self,
-             name: impl Into<String>) -> Option<RcBox<Value>>
+             name: impl Into<String>) -> Option<Rc<TypedValue<'r>>>
     {
         let ref key = name.into();
         let scope = self.stack.last().unwrap();
@@ -229,7 +261,7 @@ impl Scope {
 
     fn add_local(&mut self,
                  name: impl Into<String>,
-                 value: RcBox<Value>)
+                 value: Rc<TypedValue<'r>>)
     {
         let ref key = name.into();
 
@@ -280,6 +312,7 @@ impl Scope {
 struct Context<'r> {
     llvm_ctx: RcBox<llvm::Context>,
     llvm_module: RcSemiBox<'r, llvm::Module>,
+    glob_builder: RcSemiBox<'r, llvm::Builder>,
 
     /// Pointer to parent function of currently processed ASTNode.
     parent_func: Option<RcRef<FuncMeta<'r>>>,
@@ -289,7 +322,7 @@ struct Context<'r> {
     parent_block: Option<RcBox<BasicBlock>>,
 
     funcs: HashMap<String, RcRef<FuncMeta<'r>>>,
-    globals: HashMap<String, RcBox<Value>>
+    globals: HashMap<String, Rc<TypedValue<'r>>>
 }
 
 impl<'r> Context<'r> {
@@ -303,10 +336,14 @@ impl<'r> Context<'r> {
         let llvm_ctx_rcbox = mk_rcbox(unsafe {
             llvm_ctx_ptr.as_ref().unwrap()
         });
+        let glob_builder = llvm::Builder::new(unsafe {
+            llvm_ctx_ptr.as_ref().unwrap()
+        });
 
         Self {
             llvm_ctx: llvm_ctx_rcbox,
             llvm_module: Rc::new(module),
+            glob_builder: Rc::new(glob_builder),
 
             parent_func: None,
             exit_block: None,
@@ -320,21 +357,37 @@ impl<'r> Context<'r> {
     fn builder(&self) -> RcSemiBox<'r, llvm::Builder> {
         if let Some(paren) = &self.parent_func {
             let parenfunc = paren.borrow();
-            return parenfunc.builder.clone();
+            parenfunc.builder.clone()
+        } else {
+            self.glob_builder.clone()
         }
-        panic!("Requested builder without parent function set.");
     }
 
     fn deref_ptr(&self,
-                 ptr: RcBox<Value>) -> RcBox<Value>
+                 ptr: Rc<TypedValue>) -> Rc<TypedValue<'r>>
     {
-        let builder = self.builder();
-        let loaded = builder.build_load(&ptr);
-        mk_rcbox(loaded)
+        let ptr_ty = ptr.ty();
+        if let LangType::Ptr(pointee_ty) = &ptr_ty {
+            assert!(ptr_ty.is_pointer());
+
+            let builder = self.builder();
+            let loaded = builder.build_load(&ptr.llvm());
+
+            let typed = TypedValue::new(
+                self.llvm_ctx.clone(),
+                self.builder().clone(),
+                mk_rcbox(loaded),
+                *pointee_ty.clone()
+            ).unwrap();
+
+            Rc::new(typed)
+        } else {
+            panic!("Tried derefing non-pointer type: '{:?}'.", ptr_ty);
+        }
     }
 
     fn local_ptr(&self,
-                    name: impl Into<String>) -> Option<RcBox<Value>>
+                 name: impl Into<String>) -> Option<Rc<TypedValue<'r>>>
     {
         let parent = self.parent_func.clone()?;
         let loc = parent.borrow().scope.local(name.into())?;
@@ -342,22 +395,22 @@ impl<'r> Context<'r> {
     }
 
     fn global_ptr(&self,
-                  name: impl Into<String>) -> Option<RcBox<Value>>
+                  name: impl Into<String>) -> Option<Rc<TypedValue<'r>>>
     {
         let ref key = name.into();
         let ptr = self.globals.get(key)?;
-        Some(mk_rcbox(ptr))
+        Some(ptr.clone())
     }
 
     fn variable_ptr(&self,
-                    name: impl Into<String>) -> Option<RcBox<Value>>
+                    name: impl Into<String>) -> Option<Rc<TypedValue<'r>>>
     {
         let ref key = name.into();
         self.local_ptr(key).or(self.global_ptr(key))
     }
 
     fn variable(&self,
-                name: impl Into<String>) -> Option<RcBox<Value>>
+                name: impl Into<String>) -> Option<Rc<TypedValue<'r>>>
     {
         let name = name.into();
         self.variable_ptr(name).map(|ptr| self.deref_ptr(ptr))
@@ -373,14 +426,18 @@ impl<'r> Context<'r> {
 
     fn mk_func(&mut self,
                name: impl Into<String>,
-               argnames: Vec<String>,
+               argnames: Vec<(LangType, String)>,
+               ret_ty: LangType,
                ty: &llvm::FunctionType) -> RcRef<FuncMeta<'r>>
     {
         let funcname = name.into();
         let func = self.llvm_module.add_function(&funcname, ty);
-        let funcmeta = FuncMeta::new(self.llvm_ctx.clone(),
-                                     func,
-                                     argnames);
+        let funcmeta = FuncMeta::new(
+            self.llvm_ctx.clone(),
+            func,
+            argnames,
+            ret_ty
+        );
 
         let funcmeta_rcref = mk_rcref(funcmeta);
         self.funcs.insert(funcname.clone(), funcmeta_rcref.clone());
@@ -389,13 +446,22 @@ impl<'r> Context<'r> {
 
     fn mk_global_var(&mut self,
                      name: impl AsRef<str>,
-                     val: RcBox<Value>) -> RcBox<Value>
+                     val: Rc<TypedValue<'r>>) -> Rc<TypedValue<'r>>
     {
         let varname = name.as_ref();
-        let glob = self.llvm_module.add_global_variable(varname, val.as_ref());
+
+        let val_llvm = val.llvm();
+        let glob = self.llvm_module.add_global_variable(varname, &val_llvm);
         let glob = glob.to_super().to_super();
 
-        self.globals.insert(varname.to_string(), mk_rcbox(glob));
+        let typed = TypedValue::new(
+            self.llvm_ctx.clone(),
+            self.builder().clone(),
+            mk_rcbox(glob),
+            LangType::new_ptr(val.ty())
+        ).unwrap();
+
+        self.globals.insert(varname.to_string(), Rc::new(typed));
         self.global_ptr(varname).unwrap()
     }
 }
@@ -409,16 +475,22 @@ trait Stubgen<'r, T> {
     fn genstub(&self, ctx: &mut Context<'r>) -> T;
 }
 
-impl<'r> Codegen<'r, RcBox<Value>> for NumLiteralExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for NumLiteralExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
         let val = self.value as i64;
         let num = val.compile(&ctx.llvm_ctx);
-        mk_rcbox(num)
+        let typed = TypedValue::new(
+            ctx.llvm_ctx.clone(),
+            ctx.builder().clone(),
+            mk_rcbox(num),
+            LangType::Long
+        ).unwrap();
+        Rc::new(typed)
     }
 }
 
-impl<'r> Codegen<'r, RcBox<Value>> for ValuelikeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
         match self {
             ValuelikeExprAST::NumericLiteral(num) => {
                 num.gencode(ctx)
@@ -441,17 +513,26 @@ impl<'r> Codegen<'r, RcBox<Value>> for ValuelikeExprAST {
                     f.unwrap().clone()
                 };
 
-                let ref args = call.args
+                let ref args_typed = call.args
                     .iter()
                     .map(|arg| arg.gencode(ctx))
-                    .collect::<Vec<RcBox<Value>>>();
-
-                let argslice = &mk_slice(args)[..];
+                    .collect::<Vec<Rc<TypedValue<'r>>>>();
+                let ref args_llvm = args_typed
+                    .iter()
+                    .map(|arg| arg.llvm())
+                    .collect::<Vec<RcBox<llvm::Value>>>();
+                let argslice = &mk_slice(args_llvm)[..];
                 let builder = ctx.builder();
-                let value = builder
+                let ret_value = builder
                     .build_call(funcmeta.borrow().func.as_ref(), argslice);
+                let ret_ty = funcmeta.borrow().ret_ty.clone();
 
-                mk_rcbox(&value)
+                Rc::new(
+                    TypedValue::new(
+                        ctx.llvm_ctx.clone(), ctx.builder().clone(),
+                        mk_rcbox(&ret_value), ret_ty
+                    ).unwrap()
+                )
             },
             ValuelikeExprAST::BinExpression(binexpr) =>
                 binexpr.gencode(ctx),
@@ -461,92 +542,110 @@ impl<'r> Codegen<'r, RcBox<Value>> for ValuelikeExprAST {
     }
 }
 
-impl<'r> Codegen<'r, RcBox<Value>> for BinOpExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for BinOpExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
         let ref lhs = self.lhs.gencode(ctx);
         let ref rhs = self.rhs.gencode(ctx);
         let ref builder = ctx.builder();
 
-        // Detect if we're dealing with pointer arithmetic.
-        let ptr_artih = lhs.get_type().is_pointer() || rhs.get_type().is_pointer();
+        let lhs_ty = lhs.ty();
+        let rhs_ty = rhs.ty();
 
-        let res = match self.op {
+        // Detect if we're dealing with pointer arithmetic.
+        let ptr_artih = lhs_ty.is_pointer() && rhs_ty.is_integer();
+
+        // panic when types don't match
+        if !ptr_artih && lhs_ty != rhs_ty {
+            panic!("Operation '{:?}' on types '{:?}' and '{:?}'.",
+                   self.op, lhs_ty, rhs_ty);
+        }
+
+        let ref lhs = lhs.llvm();
+        let ref rhs = rhs.llvm();
+
+        let (value, ty) = match self.op {
             BinOp::ADD => {
-                if ptr_artih {
+                let val = if ptr_artih {
                     builder.build_unsafe_gep(lhs, &[rhs])
                 } else {
                     builder.build_add(lhs, rhs)
-                }
+                };
+                (val, lhs_ty)
             },
             BinOp::SUB => {
                 let neg_rhs = builder.build_neg(rhs);
-                if ptr_artih {
+                let val = if ptr_artih {
                     builder.build_unsafe_gep(lhs, &[neg_rhs])
                 } else {
                     builder.build_sub(lhs, rhs)
-                }
+                };
+                (val, lhs_ty)
             },
             BinOp::MUL =>
-                builder.build_mul(lhs, rhs),
+                (builder.build_mul(lhs, rhs), lhs_ty),
             BinOp::DIV =>
-                builder.build_div(lhs, rhs),
+                (builder.build_div(lhs, rhs), lhs_ty),
             BinOp::MOD =>
                 panic!("No modulo for now"),
             BinOp::AND =>
-                builder.build_and(lhs, rhs),
+                (builder.build_and(lhs, rhs), lhs_ty),
             BinOp::OR =>
-                builder.build_or(lhs, rhs),
+                (builder.build_or(lhs, rhs), lhs_ty),
             BinOp::BIT_AND | BinOp::BIT_OR =>
                 panic!("No bitwise AND and OR."),
             BinOp::LT =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::LessThan),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::LessThan),
+                 LangType::Bool),
             BinOp::LTE =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::LessThanOrEqual),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::LessThanOrEqual),
+                 LangType::Bool),
             BinOp::GT =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThan),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThan),
+                 LangType::Bool),
             BinOp::GTE =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThanOrEqual),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::GreaterThanOrEqual),
+                 LangType::Bool),
             BinOp::EQ =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::Equal),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::Equal),
+                 LangType::Bool),
             BinOp::NON_EQ =>
-                builder.build_cmp(lhs, rhs, llvm::Predicate::NotEqual),
+                (builder.build_cmp(lhs, rhs, llvm::Predicate::NotEqual),
+                 LangType::Bool)
         };
 
-        mk_rcbox(res)
+        Rc::new(TypedValue::new(
+            ctx.llvm_ctx.clone(), ctx.builder().clone(),
+            mk_rcbox(value), ty
+        ).unwrap())
     }
 }
 
-impl<'r> Codegen<'r, RcBox<Value>> for UnaryOpExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<Value> {
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for UnaryOpExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
         let ref builder = ctx.builder();
 
-        let value_op = match self.op {
+        let (value, ty) = match self.op {
             UnaryOp::NOT => {
                 let ref value = self.expr.gencode(ctx);
-                builder.build_not(value)
+                (builder.build_not(&value.llvm()), value.ty())
             },
             UnaryOp::MINUS => {
                 let ref value = self.expr.gencode(ctx);
-                builder.build_neg(&value)
+                (builder.build_neg(&value.llvm()), value.ty())
             },
             UnaryOp::REF => {
                 match &self.expr {
                     ValuelikeExprAST::Variable(ident) => {
                         let ptr = ctx.variable_ptr(&ident.name);
-                        let ptr = ptr
-                            .unwrap_or_else(|| panic!("&{0}: No such value with identifier '{0}'.",
-                                                      &ident.name));
+                        let ptr = ptr.unwrap_or_else(
+                            || panic!("&{0}: No such value with identifier '{0}'.",
+                                      &ident.name));
 
                         // Get reference to local stack variable
-                        let ptr_ty: &llvm::Type = ptr.get_type();
+                        let ptr_ty = ptr.ty();
                         assert!(ptr_ty.is_pointer());
 
-                        // Cast it to pointer type
-                        let ptr_ty: &llvm::PointerType =
-                            llvm::Sub::<llvm::Type>::from_super(ptr_ty).unwrap();
-
-                        builder.build_ptr_to_int(&ptr,
-                                                 ptr_ty)
+                        return ptr
                     },
                     x => {
                         panic!("Unable to get pointer of '{:?}'.", x)
@@ -555,22 +654,19 @@ impl<'r> Codegen<'r, RcBox<Value>> for UnaryOpExprAST {
             },
             UnaryOp::DEREF => {
                 let ref value = self.expr.gencode(ctx);
-                let value_ty = value.get_type();
-                if !value_ty.is_pointer() {
-                    panic!("Tried dereferencing {:?}, which is not a pointer type.", &value);
+                if let LangType::Ptr(pointee_ty) = value.ty() {
+                    let loaded = builder.build_load(&value.llvm());
+                    (loaded, *pointee_ty)
+                } else {
+                    panic!("Tried dereferencing {:?}, which is not a pointer type.", value.llvm());
                 }
-
-                // Cast value to pointer type
-                let value_ty: &llvm::PointerType =
-                    llvm::Sub::<llvm::Type>::from_super(value_ty).unwrap();
-
-                let ptr = builder.build_int_to_ptr(value, value_ty);
-                let loaded = builder.build_load(&ptr);
-                loaded
             },
         };
 
-        mk_rcbox(value_op)
+        Rc::new(TypedValue::new(
+            ctx.llvm_ctx.clone(), ctx.builder().clone(),
+            mk_rcbox(value), ty
+        ).unwrap())
     }
 }
 
@@ -647,17 +743,21 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 ValuelikeExprAST::Call(call.clone()).gencode(ctx);
             },
 
-            // Ignored for now
+            // Ignored
             InBlockExprAST::Valuelike(_) => {}
 
             InBlockExprAST::Declaration(decl) => {
                 let ref name = decl.ident.name;
-                let ty = decl.ty.gencode(ctx).as_llvm(ctx.llvm_ctx.clone());
+                let ty = decl.ty.gencode(ctx); //.as_llvm(ctx.llvm_ctx.clone());
 
                 match &decl.value {
                     DeclarationRHSExprAST::Valuelike(valuelike) => {
                         let valuelike = valuelike.gencode(ctx);
-                        parenfunc.borrow_mut().mk_local_var(name, &ty, Some(valuelike))
+                        if valuelike.ty() != ty {
+                            panic!("Tried declaring '{}' as {:?}, but value is {:?}",
+                                   name, ty, valuelike.ty());
+                        }
+                        parenfunc.borrow_mut().mk_local_var(name, valuelike)
                     },
 
                     DeclarationRHSExprAST::Array(
@@ -666,15 +766,11 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                         let size = sizeval.gencode(ctx);
 
                         // Arrays should have pointer type specified.
-                        assert!(ty.is_pointer());
-                        let ty: &llvm::PointerType =
-                            llvm::Sub::<llvm::Type>::from_super(&ty).unwrap();
-
-                        parenfunc.borrow_mut().mk_local_arr(
-                            name,
-                            ty.get_element(),
-                            size
-                        )
+                        if let LangType::Ptr(pointee_ty) = ty {
+                            parenfunc.borrow_mut().mk_local_arr(name, *pointee_ty, size)
+                        } else {
+                            panic!("Array declaration should always be a pointer type.")
+                        }
                     },
 
                     DeclarationRHSExprAST::Array(
@@ -691,25 +787,25 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                     // In this case it should create new local varaible.
                     WritableExprAST::Variable(ident) => {
                         let ref name = ident.name;
-                        let local_ptr = ctx.local_ptr(name)
-                            .unwrap_or_else(||
-                                            panic!("Redeclaration of '{}'. No such name in current scope.",
-                                                   name));
+                        let local_ptr = ctx.local_ptr(name).unwrap_or_else(
+                            || panic!("Redeclaration of '{}'. No such name in current scope.",
+                                      name));
+
+                        assert!(local_ptr.ty().is_pointer());
+
                         let builder = ctx.builder();
-                        builder.build_store(&valuelike, &local_ptr);
+                        builder.build_store(&valuelike.llvm(), &local_ptr.llvm());
                     },
                     // 1. Evaluate body of deref and make sure it's a pointer.
                     // 2. Write evaluated value into target address.
                     WritableExprAST::PtrWrite(deref) => {
                         let target_ptr = deref.target.gencode(ctx);
-                        let target_ty = target_ptr.get_type();
-
-                        if !target_ty.is_pointer() {
+                        if let LangType::Ptr(_) = target_ptr.ty() {
+                            let builder = ctx.builder();
+                            builder.build_store(&valuelike.llvm(), &target_ptr.llvm());
+                        } else {
                             panic!("PtrWrite: {:?} was expected to be a pointer.", deref.target);
                         }
-
-                        let builder = ctx.builder();
-                        builder.build_store(&valuelike, &target_ptr);
                     }
                 }
             },
@@ -743,7 +839,7 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 // Generate code for condition
                 let cond = iff.cond.gencode(ctx);
                 // Build conditional branching
-                ctx.builder().build_cond_br(&cond, &b1, Some(&b2));
+                ctx.builder().build_cond_br(&cond.llvm(), &b1, Some(&b2));
                 // Move builder to the end of exitblock
                 ctx.builder().position_at_end(&new_exitblk);
                 // Exitblock will be a parent for following ones.
@@ -783,7 +879,7 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                 // Terminate condition block with conditional branch
                 ctx.builder().position_at_end(&condblk);
                 let cond = wwhile.cond.gencode(ctx);
-                ctx.builder().build_cond_br(&cond, &loopblk, Some(&exitblk));
+                ctx.builder().build_cond_br(&cond.llvm(), &loopblk, Some(&exitblk));
 
                 // Terminate start with branch to conditional
                 ctx.builder().position_at_end(&startblk);
@@ -812,28 +908,28 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
     }
 }
 
-impl<'r> Codegen<'r, Box<dyn Typed>> for PrimitiveTypeExprAST {
-    fn gencode(&self, _: &mut Context<'r>) -> Box<dyn Typed> {
+impl<'r> Codegen<'r, LangType> for PrimitiveTypeExprAST {
+    fn gencode(&self, _: &mut Context<'r>) -> LangType {
         match self {
-            Self::Byte  => Box::new(Byte),
-            Self::Short => Box::new(Short),
-            Self::Int   => Box::new(Int),
-            Self::Long  => Box::new(Long),
-            Self::Void  => Box::new(Void),
+            Self::Byte  => LangType::Byte,
+            Self::Short => LangType::Short,
+            Self::Int   => LangType::Int,
+            Self::Long  => LangType::Long,
+            Self::Void  => LangType::Void,
         }
     }
 }
 
-impl<'r> Codegen<'r, Box<dyn Typed>> for PtrTypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<dyn Typed> {
+impl<'r> Codegen<'r, LangType> for PtrTypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> LangType {
         let ty = self.pointee.gencode(ctx);
-        let ptr_ty = Ptr::new(ty);
-        Box::new(ptr_ty)
+        let ptr_ty = LangType::Ptr(Box::new(ty));
+        ptr_ty
     }
 }
 
-impl<'r> Codegen<'r, Box<dyn Typed>> for TypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> Box<dyn Typed> {
+impl<'r> Codegen<'r, LangType> for TypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> LangType {
         match self {
             TypeExprAST::Primitive(primitive) =>
                 primitive.gencode(ctx),
@@ -854,7 +950,7 @@ impl<'r> Codegen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
             .unwrap_or_else(|| panic!("FuncDefExprAST: No FuncMeta for '{}'.", funcname));
         ctx.parent_func = Some(Rc::clone(&funcmeta));
 
-        let preamb_blk = funcmeta.borrow_mut().mk_preamb();
+        let preamb_blk = FuncMeta::mk_preamb(funcmeta.clone());
         let drop_blk = funcmeta.borrow_mut().mk_drop();
         ctx.exit_block = Some(Rc::clone(&drop_blk));
 
@@ -905,22 +1001,20 @@ impl<'r> Stubgen<'r, RcRef<FuncMeta<'r>>> for FuncDefExprAST {
 
         // Extract arg names
         let arg_names = prot.args.iter()
-            .map(|(ident, _)| ident.name.clone())
-            .collect::<Vec<String>>();
-
-        let arg_types = prot.args.iter()
-            .map(|(_, ty)| {
-                let typed = ty.gencode(ctx);
-                typed.as_llvm(ctx.llvm_ctx.clone())
-            })
-            .collect::<Vec<RcBox<llvm::Type>>>();
+            .map(|(ident, ty)| (ty.gencode(ctx), ident.name.clone()))
+            .collect::<Vec<(LangType, String)>>();
 
         let ret_type = prot.ret_type
-            .gencode(ctx)
-            .as_llvm(ctx.llvm_ctx.clone());
-
-        let sig = llvm::FunctionType::new(&ret_type, &mk_slice(&arg_types)[..]);
-        ctx.mk_func(funcname.clone(), arg_names, sig)
+            .gencode(ctx);
+        let arg_types = arg_names.iter()
+            .map(|(ty, _)| ty.as_llvm(ctx.llvm_ctx.clone()))
+            .collect::<Vec<RcBox<llvm::Type>>>();
+        let ret_ty = ret_type.as_llvm(ctx.llvm_ctx.clone());
+        let sig = llvm::FunctionType::new(
+            &ret_ty,
+            &mk_slice(&arg_types)[..]
+        );
+        ctx.mk_func(funcname.clone(), arg_names, ret_type, sig)
     }
 }
 
@@ -943,8 +1037,8 @@ impl<'r> Stubgen<'r, ()> for OutBlockExprAST {
                 }
 
                 if let DeclarationRHSExprAST::Valuelike(valuelike) = value {
-                    let ref valuelike = valuelike.gencode(ctx);
-                    ctx.mk_global_var(name, mk_rcbox(valuelike));
+                    let valuelike = valuelike.gencode(ctx);
+                    ctx.mk_global_var(name, valuelike);
                 }
             },
             OutBlockExprAST::FuncDef(funcdef) => {
