@@ -2,9 +2,20 @@ extern crate llvm;
 
 use super::utils::*;
 
-
 pub trait Typed {
     fn as_llvm(&self, ctx: RcBox<llvm::Context>) -> RcBox<llvm::Type>;
+
+    fn cast_as_byte<'r>(&self,
+                        _: RcSemiBox<'r, llvm::Builder>) -> Option<Byte> { None }
+    fn cast_as_short<'r>(&self,
+                         _: RcSemiBox<'r, llvm::Builder>) -> Option<Short> { None }
+    fn cast_as_int<'r>(&self,
+                       _: RcSemiBox<'r, llvm::Builder>) -> Option<Int> { None }
+    fn cast_as_long<'r>(&self,
+                        _: RcSemiBox<'r, llvm::Builder>) -> Option<Long> { None }
+    fn cast_as_ptr<'r>(&self,
+                       _: RcSemiBox<'r, llvm::Builder>,
+                       _: &dyn Typed) -> Option<Ptr> { None }
 }
 
 /// Implementation of Typed for primitives
@@ -45,11 +56,11 @@ impl Typed for Void {
 
 /// Pointer type
 pub struct Ptr {
-    pointee: RcBox<dyn Typed>
+    pointee: Box<dyn Typed>
 }
 
 impl Ptr {
-    pub fn new(pointee: RcBox<dyn Typed>) -> Self {
+    pub fn new(pointee: Box<dyn Typed>) -> Self {
         Self { pointee: pointee }
     }
 }
@@ -62,15 +73,15 @@ impl Typed for Ptr {
 }
 
 /// Container for llvm Value with Typed type.
-pub struct TypedValue<T> {
+pub struct TypedValue {
     value: RcBox<llvm::Value>,
-    ty: T
+    ty:    Box<dyn Typed>
 }
 
-impl<T: Typed> TypedValue<T> {
+impl TypedValue {
     pub fn new(ctx: RcBox<llvm::Context>,
            value: RcBox<llvm::Value>,
-           ty: T) -> Result<Self, impl Into<String>>
+           ty: Box<dyn Typed>) -> Result<Self, impl Into<String>>
     {
         let value_ty = value.get_type();
         let typed_ty = ty.as_llvm(ctx);
@@ -81,19 +92,4 @@ impl<T: Typed> TypedValue<T> {
 
         Ok(Self { value: value, ty: ty })
     }
-
-    pub fn ty(&self) -> &T {
-        &self.ty
-    }
-
-    pub fn value(&self) -> RcBox<llvm::Value> {
-        self.value.clone()
-    }
 }
-
-
-/// This trait represents objects castable to T.
-pub trait Cast<T: Typed> {
-    fn build<'r>(&self, builder: RcSemiBox<'r, llvm::Builder>) -> T;
-}
-

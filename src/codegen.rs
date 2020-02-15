@@ -812,29 +812,28 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
     }
 }
 
-impl<'r> Codegen<'r, RcBox<dyn Typed>> for PrimitiveTypeExprAST {
-    fn gencode(&self, _: &mut Context<'r>) -> RcBox<dyn Typed> {
-        let ty: Box<dyn Typed> = match self {
+impl<'r> Codegen<'r, Box<dyn Typed>> for PrimitiveTypeExprAST {
+    fn gencode(&self, _: &mut Context<'r>) -> Box<dyn Typed> {
+        match self {
             Self::Byte  => Box::new(Byte),
             Self::Short => Box::new(Short),
             Self::Int   => Box::new(Int),
             Self::Long  => Box::new(Long),
             Self::Void  => Box::new(Void),
-        };
-        Rc::new(ty)
+        }
     }
 }
 
-impl<'r> Codegen<'r, RcBox<dyn Typed>> for PtrTypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<dyn Typed> {
+impl<'r> Codegen<'r, Box<dyn Typed>> for PtrTypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Box<dyn Typed> {
         let ty = self.pointee.gencode(ctx);
         let ptr_ty = Ptr::new(ty);
-        Rc::new(Box::new(ptr_ty))
+        Box::new(ptr_ty)
     }
 }
 
-impl<'r> Codegen<'r, RcBox<dyn Typed>> for TypeExprAST {
-    fn gencode(&self, ctx: &mut Context<'r>) -> RcBox<dyn Typed> {
+impl<'r> Codegen<'r, Box<dyn Typed>> for TypeExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Box<dyn Typed> {
         match self {
             TypeExprAST::Primitive(primitive) =>
                 primitive.gencode(ctx),
