@@ -3,8 +3,8 @@ extern crate llvm;
 use super::ast::*;
 use super::utils::*;
 use super::token::*;
-#[macro_use]
 use super::types::*;
+use super::allocator::*;
 
 use std::process::Command;
 use std::collections::HashMap;
@@ -13,7 +13,6 @@ use std::collections::HashMap;
 // https://tombebbington.github.io/llvm-rs/llvm/index.html
 use llvm::{
     BasicBlock,
-    Value,
     Function,
     Compile,
     Sub
@@ -22,19 +21,20 @@ use llvm::{
 const MOD_NAME: &'static str = "llvm-tut";
 
 struct FuncMeta<'r> {
-    ctx:      RcBox<llvm::Context>,
-    builder:  RcSemiBox<'r, llvm::Builder>,
-    func:     RcBox<Function>,
-    blocks:   HashMap<String, RcBox<BasicBlock>>,
+    ctx:       RcBox<llvm::Context>,
+    builder:   RcSemiBox<'r, llvm::Builder>,
+    allocator: Rc<StackAllocator<'r>>,
+    func:      RcBox<Function>,
+    blocks:    HashMap<String, RcBox<BasicBlock>>,
 
-    argnames: Vec<(LangType, String)>,
-    argptrs:  Vec<Rc<TypedValue<'r>>>,
-    ret_ty:   LangType,
+    argnames:  Vec<(LangType, String)>,
+    argptrs:   Vec<Rc<TypedValue<'r>>>,
+    ret_ty:    LangType,
 
-    preamb:   Option<RcBox<BasicBlock>>,
-    drop:     Option<RcBox<BasicBlock>>,
-    retval:   Option<Rc<TypedValue<'r>>>,
-    scope:    Scope<'r>
+    preamb:    Option<RcBox<BasicBlock>>,
+    drop:      Option<RcBox<BasicBlock>>,
+    retval:    Option<Rc<TypedValue<'r>>>,
+    scope:     Scope<'r>
 }
 
 impl<'r> FuncMeta<'r> {
@@ -45,15 +45,16 @@ impl<'r> FuncMeta<'r> {
     ) -> Self
     {
         let arity = argnames.len();
-
         let ctx_ptr = &**ctx as *const llvm::Context;
-        let builder = llvm::Builder::new(unsafe {
+        let builder = Rc::new(llvm::Builder::new(unsafe {
             ctx_ptr.as_ref().unwrap()
-        });
+        }));
+        let allocator = Rc::new(StackAllocator::new(ctx.clone(), builder.clone()));
 
         Self {
             ctx: ctx.clone(),
-            builder: Rc::new(builder),
+            builder: builder,
+            allocator: allocator,
             func: mk_rcbox(func),
             blocks: HashMap::new(),
 
@@ -69,9 +70,13 @@ impl<'r> FuncMeta<'r> {
     }
 
     fn block(&self,
-             blkname: impl AsRef<str>) -> Option<RcBox<BasicBlock>> {
-        self.blocks.get(blkname.as_ref())
-            .map(|r| r.clone())
+             blkname: impl AsRef<str>) -> Option<RcBox<BasicBlock>>
+    {
+        self.blocks.get(blkname.as_ref()).map(|r| r.clone())
+    }
+
+    fn allocator(&self) -> Rc<StackAllocator<'r>> {
+        self.allocator.clone()
     }
 
     fn mk_block(&mut self,
@@ -89,40 +94,47 @@ impl<'r> FuncMeta<'r> {
 
     fn mk_local_var(&mut self,
                     name: impl AsRef<str>,
-                    typed: Rc<TypedValue>) -> Rc<TypedValue<'r>>
+                    typed: Rc<TypedValue<'r>>) -> Rc<TypedValue<'r>>
     {
-        let builder = self.builder.clone();
-
         let varname = name.as_ref();
-        let alloca = builder.build_alloca(&typed.ty().as_llvm(self.ctx.clone()));
+        let allocated = self.allocator.val(typed.ty(), Some(typed.clone()))
+            .unwrap_or_else(|err| panic!(err));
 
-        builder.build_store(&typed.llvm(), alloca);
-
-        let typed_val = TypedValue::new(
-            self.ctx.clone(), self.builder.clone(),
-            mk_rcbox(alloca), LangType::new_ptr(typed.ty())
-        ).unwrap();
-
-        self.scope.add_local(varname, Rc::new(typed_val));
+        self.scope.add_local(varname, Rc::new(allocated));
         self.scope.local(varname).unwrap()
     }
 
-    fn mk_local_arr(&mut self,
-                    name: impl AsRef<str>,
-                    ty: LangType,
-                    size: Rc<TypedValue<'r>>) -> Rc<TypedValue<'r>>
+    fn mk_local_arr_ofsize(&mut self,
+                           name: impl AsRef<str>,
+                           ty: LangType,
+                           size: Rc<TypedValue<'r>>) -> Rc<TypedValue<'r>>
     {
-        let builder = self.builder.clone();
+        let varname = name.as_ref();
+        let allocated = self.allocator.arr_ofsize(ty, size.clone())
+            .unwrap_or_else(|err| panic!(err));
 
-        let arrname = name.as_ref();
-        let arr_ptr = builder.build_array_alloca(&ty.as_llvm(self.ctx.clone()), &size.llvm());
+        self.mk_local_var(varname, Rc::new(allocated))
+    }
 
-        let typed = Rc::new(TypedValue::new(
-            self.ctx.clone(), self.builder.clone(),
-            mk_rcbox(arr_ptr), LangType::new_ptr(ty)
-        ).unwrap());
+    fn mk_local_arr_byelems(&mut self,
+                            name: impl AsRef<str>,
+                            ty: LangType,
+                            elems: Vec<Rc<TypedValue<'r>>>) -> Rc<TypedValue<'r>>
+    {
+        let varname = name.as_ref();
 
-        self.mk_local_var(arrname, typed)
+        // Try to cast elems to ty
+        let mut casted = Vec::with_capacity(elems.len());
+        for elem in elems {
+            let cast = elem.cast(ty.clone())
+                .unwrap_or_else(|| panic!("Unable to cast array element into '{:?}'.", ty));
+            casted.push(cast);
+        }
+
+        let allocated = self.allocator.arr_byelems(ty, casted)
+            .unwrap_or_else(|err| panic!(err));
+
+        self.mk_local_var(varname, Rc::new(allocated))
     }
 
     fn mk_preamb(this: RcRef<Self>) -> RcBox<BasicBlock> {
@@ -808,10 +820,13 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
 
                         // Arrays should have pointer type specified.
                         if let LangType::Ptr(pointee_ty) = ty {
-                            parenfunc.borrow_mut().mk_local_arr(name, *pointee_ty, size)
-                        } else {
-                            panic!("Array declaration should always be a pointer type.")
+                            parenfunc
+                                .borrow_mut()
+                                .mk_local_arr_ofsize(name, *pointee_ty, size);
+                            return;
                         }
+
+                        panic!("Array declaration should always be a pointer type.")
                     },
 
                     DeclarationRHSExprAST::Array(
@@ -823,33 +838,13 @@ impl<'r> Codegen<'r, ()> for InBlockExprAST {
                                 .map(|elem| elem.gencode(ctx))
                                 .collect::<Vec<Rc<TypedValue>>>();
 
-                            let len_value = (values.len() as i64).compile(&ctx.llvm_ctx);
-                            let size = Rc::new(TypedValue::new(
-                                ctx.llvm_ctx.clone(), ctx.builder().clone(),
-                                mk_rcbox(len_value), LangType::Long
-                            ).unwrap());
-
-                            let arr = parenfunc.borrow_mut().mk_local_arr(name, *pointee_ty.clone(), size);
-                            let arr_d = ctx.deref_ptr(arr.clone());
-
-                            // Populate newly created array with values
-                            let builder = ctx.builder();
-                            for i in 0..values.len() {
-                                let offset = (i as i64).compile(&ctx.llvm_ctx);
-                                let item_ptr = builder.build_gep(&arr_d.llvm(), &[offset]);
-                                let value = values.get(i).unwrap().clone();
-
-                                let casted = value
-                                    .cast(*pointee_ty.clone())
-                                    .unwrap_or_else(|| panic!("ByElements array declaration. Unable to cast to var type."));
-
-                                builder.build_store(&casted.llvm(), item_ptr);
-                            }
-
-                            arr
-                        } else {
-                            panic!("Array declaration should always be a pointer type.")
+                            parenfunc
+                                .borrow_mut()
+                                .mk_local_arr_byelems(name, *pointee_ty.clone(), values);
+                            return ;
                         }
+
+                        panic!("Array declaration should always be a pointer type.")
                     }
                 };
             },

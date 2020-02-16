@@ -1,8 +1,8 @@
 mod token;
 mod ast;
 mod utils;
-#[macro_use]
 mod types;
+mod allocator;
 mod codegen;
 
 use token::mk_tokens;

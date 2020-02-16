@@ -46,8 +46,6 @@ def main() -> byte {
     @(x+33) = 89
     @(x+44) = 91
 
-    let name: @byte = "xDDDD"
-
     return (max(x, n)+glob) as byte
 }
 

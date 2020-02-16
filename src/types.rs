@@ -24,7 +24,6 @@ macro_rules! accessor {
     }
 }
 
-#[macro_export]
 macro_rules! llvm_typeof {
     ($ctx: expr, $typ: ty) => {
         mk_rcbox(llvm::Type::get::<$typ>(&$ctx))
