@@ -10,17 +10,31 @@ def max(arr: @int, size: int) -> int {
    return @max
 }
 
-def zeroed(arr: @int, size: int) -> () {
+def zeroed(arr: @int, size: long) -> @int {
     let i: int = 0
     while i < size {
       @(arr+i) = 0
       i = i+1
     }
+    return arr
+}
+
+def incremented(arr: @int, size: long) -> @int {
+let i: int = 0
+    while i < size {
+      @(arr+i) = @(arr+1)+1
+      i = i+1
+    }
+    return arr
+}
+
+def first(arr: @int) -> int {
+    return @arr
 }
 
 # This creates 2D array with consecutive
 # natural numbers on the diagonal.
-def ptrs(n: int, j: int) -> int {
+def ptrs(n: long, j: int) -> int {
     let x: @@int = [n]
     let i: int = 0
     while i < n {
@@ -33,13 +47,8 @@ def ptrs(n: int, j: int) -> int {
     return @(@(x+j)+j)
 }
 
-def firstchar(str: @long) -> byte {
-    let first: long = @str
-    return (first as byte)
-}
-
 def main() -> byte {
-    let n: int = 50
+    let n: long = 50
     let x: @int = [n]
 
     zeroed(x, n)
@@ -50,7 +59,7 @@ def main() -> byte {
     @(x+33) = 89
     @(x+44) = 91
 
-    return firstchar("xDDD" as @long) #(max(x, n)+glob) as byte
+    return first([1 as int, 2, 3, 4] + 2) as byte
 }
 
 let glob: int = 1

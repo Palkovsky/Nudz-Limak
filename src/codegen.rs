@@ -128,7 +128,7 @@ impl<'r> FuncMeta<'r> {
         for elem in elems {
             let cast = elem.cast(ty.clone())
                 .unwrap_or_else(|| panic!("Unable to cast array element into '{:?}'.", ty));
-            casted.push(cast);
+            casted.push(Rc::new(cast));
         }
 
         let allocated = self.allocator.arr_byelems(ty, casted)
@@ -518,11 +518,40 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for StringLiteralExprAST {
                     mk_rcbox(value), LangType::Byte
                 ).unwrap()
             })
-            .collect::<Vec<TypedValue>>();
+            .map(|typed| Rc::new(typed))
+            .collect::<Vec<Rc<TypedValue>>>();
 
-        //let allocator = ;
         let allocator = ctx.allocator();
         let allocated = allocator.arr_byelems(LangType::Byte, elements)
+            .unwrap_or_else(|err| panic!("'{}' when allocating string. ", err.msg));
+
+        Rc::new(allocated)
+    }
+}
+
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ArrayDeclarationExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
+        let elements = match self {
+            ArrayDeclarationExprAST::BySize(sz) => {
+                vec![sz.gencode(ctx)]
+            },
+            ArrayDeclarationExprAST::ByElements(elems) => {
+                elems.into_iter()
+                    .map(|elem| elem.gencode(ctx))
+                    .collect()
+            }
+        };
+
+        let mut casted = Vec::with_capacity(elements.len());
+        let ty = elements.first().unwrap().ty();
+        for elem in elements.into_iter() {
+            let cast = elem.cast(ty.clone())
+                .unwrap_or_else(|| panic!("Array Delcaration: non-uniform types. Expected '{:?}', got '{:?}'."));
+            casted.push(Rc::new(cast));
+        }
+
+        let allocator = ctx.allocator();
+        let allocated = allocator.arr_byelems(ty, casted)
             .unwrap_or_else(|err| panic!("'{}' when allocating string. ", err.msg));
 
         Rc::new(allocated)
@@ -538,6 +567,10 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
 
             ValuelikeExprAST::StringLiteral(string) => {
                 string.gencode(ctx)
+            },
+
+            ValuelikeExprAST::ArrayLiteral(arr) => {
+                arr.gencode(ctx)
             },
 
             ValuelikeExprAST::Variable(ident) => {
@@ -630,7 +663,6 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for BinOpExprAST {
         let rhs_ty = rhs.ty();
         let ref lhs = lhs.llvm();
         let ref rhs = rhs.llvm();
-
 
         let (value, ty) = match self.op {
             BinOp::ADD => {

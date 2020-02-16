@@ -57,7 +57,7 @@ impl<'r> StackAllocator<'r> {
     }
 
     /// ty is type of array elements
-    pub fn arr_byelems(&self, ty: LangType, elems: Vec<TypedValue<'r>>) -> AllocRes<'r> {
+    pub fn arr_byelems(&self, ty: LangType, elems: Vec<Rc<TypedValue<'r>>>) -> AllocRes<'r> {
         let size = elems.len();
         let size_value = (size as u64).compile(&self.ctx);
         let size_typed = typed!(self, size_value, LangType::Long)?;
