@@ -375,6 +375,14 @@ impl<'r> Context<'r> {
         }
     }
 
+    fn allocator(&self) -> Rc<StackAllocator<'r>> {
+        if let Some(paren) = &self.parent_func {
+            let parenfunc = paren.borrow();
+            return parenfunc.allocator.clone();
+        }
+        panic!("Requested allocator without paren function set.");
+    }
+
     fn deref_ptr(&self,
                  ptr: Rc<TypedValue>) -> Rc<TypedValue<'r>>
     {
@@ -492,12 +500,32 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for NumLiteralExprAST {
         let val = self.value as i64;
         let num = val.compile(&ctx.llvm_ctx);
         let typed = TypedValue::new(
-            ctx.llvm_ctx.clone(),
-            ctx.builder().clone(),
-            mk_rcbox(num),
-            LangType::Long
+            ctx.llvm_ctx.clone(), ctx.builder().clone(),
+            mk_rcbox(num), LangType::Long
         ).unwrap();
         Rc::new(typed)
+    }
+}
+
+impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for StringLiteralExprAST {
+    fn gencode(&self, ctx: &mut Context<'r>) -> Rc<TypedValue<'r>> {
+        let elements = self.chars.clone()
+            .into_iter()
+            .map(|chr| chr.compile(&ctx.llvm_ctx))
+            .map(|value| {
+                TypedValue::new(
+                    ctx.llvm_ctx.clone(), ctx.builder().clone(),
+                    mk_rcbox(value), LangType::Byte
+                ).unwrap()
+            })
+            .collect::<Vec<TypedValue>>();
+
+        //let allocator = ;
+        let allocator = ctx.allocator();
+        let allocated = allocator.arr_byelems(LangType::Byte, elements)
+            .unwrap_or_else(|err| panic!("'{}' when allocating string. ", err.msg));
+
+        Rc::new(allocated)
     }
 }
 
@@ -506,6 +534,10 @@ impl<'r> Codegen<'r, Rc<TypedValue<'r>>> for ValuelikeExprAST {
         match self {
             ValuelikeExprAST::NumericLiteral(num) => {
                 num.gencode(ctx)
+            },
+
+            ValuelikeExprAST::StringLiteral(string) => {
+                string.gencode(ctx)
             },
 
             ValuelikeExprAST::Variable(ident) => {

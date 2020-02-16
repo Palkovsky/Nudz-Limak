@@ -33,6 +33,10 @@ def ptrs(n: int, j: int) -> int {
     return @(@(x+j)+j)
 }
 
+def firstchar(str: @long) -> byte {
+    let first: long = @str
+    return (first as byte)
+}
 
 def main() -> byte {
     let n: int = 50
@@ -46,7 +50,7 @@ def main() -> byte {
     @(x+33) = 89
     @(x+44) = 91
 
-    return (max(x, n)+glob) as byte
+    return firstchar("xDDD" as @long) #(max(x, n)+glob) as byte
 }
 
 let glob: int = 1

@@ -67,6 +67,7 @@ pub struct UnaryOpExprAST {
 #[derive(Debug, PartialEq, Clone)]
 pub enum BinOpAtomAST {
     NumericLiteral(NumLiteralExprAST),
+    StringLiteral(StringLiteralExprAST),
     Variable(IdentifierExprAST),
     Paren(Box<ParenExprAST>),
     Unary(UnaryOpExprAST),
@@ -95,6 +96,7 @@ pub struct CastExprAST {
 pub enum ValuelikeExprAST {
     Casted(Box<CastExprAST>),
     NumericLiteral(NumLiteralExprAST),
+    StringLiteral(StringLiteralExprAST),
     BinExpression(Box<BinOpExprAST>),
     UnaryExpression(Box<UnaryOpExprAST>),
     Variable(IdentifierExprAST),
@@ -214,9 +216,9 @@ impl fmt::Display for ParserError {
     }
 }
 
-pub trait ASTNode<T=Self>: Sized {
-    fn parse(input: &mut impl Stream<Token>) -> Result<T, ParserError>;
-    fn run_parser(input: &mut impl Stream<Token>) -> Result<T, ParserError> {
+pub trait ASTNode: Sized {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError>;
+    fn run_parser(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         // This is not ideal.
         // Whole token stream must be cloned to perform backtracing.
         let mut stream = input.clone();
@@ -279,16 +281,20 @@ impl ASTNode for NumLiteralExprAST {
     }
 }
 
-impl ASTNode<ArrayDeclarationExprAST> for StringLiteralExprAST {
-    fn parse(input: &mut impl Stream<Token>) -> Result<ArrayDeclarationExprAST, ParserError> {
+impl Into<ArrayDeclarationExprAST> for StringLiteralExprAST {
+    fn into(self) -> ArrayDeclarationExprAST {
+        let elements = self.chars
+            .into_iter()
+            .map(|chr| ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: chr as u64}))
+            .collect::<Vec<ValuelikeExprAST>>();
+        ArrayDeclarationExprAST::ByElements(elements)
+    }
+}
+
+impl ASTNode for StringLiteralExprAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         match input.next() {
-            Some(Token::STRING(chars)) => {
-                let elements = chars
-                    .into_iter()
-                    .map(|chr| ValuelikeExprAST::NumericLiteral(NumLiteralExprAST { value: chr as u64}))
-                    .collect::<Vec<ValuelikeExprAST>>();
-                Ok(ArrayDeclarationExprAST::ByElements(elements))
-            },
+            Some(Token::STRING(chars)) => Ok(Self { chars: chars }),
             _ => Err(ParserError::from("Expected string literal."))
         }
     }
@@ -352,10 +358,17 @@ impl ASTNode for TypeExprAST {
     }
 }
 
-impl ASTNode<TypeExprAST> for TypeSpecAST {
-    fn parse(input: &mut impl Stream<Token>) -> Result<TypeExprAST, ParserError> {
+impl Into<TypeExprAST> for TypeSpecAST {
+    fn into(self) -> TypeExprAST {
+        self.ty
+    }
+}
+
+impl ASTNode for TypeSpecAST {
+    fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         SingleTokenExprAST::expect(Token::COLON, input)?;
-        TypeExprAST::run_parser(input)
+        let ty = TypeExprAST::run_parser(input)?;
+        Ok(Self { ty: ty })
     }
 }
 
@@ -390,6 +403,8 @@ impl BinOpAtomAST {
         match self {
             Self::NumericLiteral(num) =>
                 ValuelikeExprAST::NumericLiteral(num),
+            Self::StringLiteral(num) =>
+                ValuelikeExprAST::StringLiteral(num),
             Self::Variable(ident) =>
                 ValuelikeExprAST::Variable(ident),
             Self::Call(call) =>
@@ -404,7 +419,9 @@ impl BinOpAtomAST {
 
 impl ASTNode for BinOpAtomAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
-        if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
+        if let Ok(string) = StringLiteralExprAST::run_parser(input) {
+            Ok(Self::StringLiteral(string))
+        } else if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
             Ok(Self::Unary(unary))
         } else if let Ok(paren) = ParenExprAST::run_parser(input) {
             Ok(Self::Paren(Box::new(paren)))
@@ -597,6 +614,8 @@ impl ASTNode for ValuelikeExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         if let Ok(casted) = CastExprAST::run_parser(input) {
             Ok(Self::Casted(Box::new(casted)))
+        } else if let Ok(string) = StringLiteralExprAST::run_parser(input) {
+            Ok(Self::StringLiteral(string))
         } else if let Ok(expr) = BinOpExprAST::run_parser(input) {
             Ok(Self::BinExpression(Box::new(expr)))
         } else if let Ok(unary) = UnaryOpExprAST::run_parser(input) {
@@ -619,7 +638,7 @@ impl ASTNode for ArrayDeclarationExprAST {
     fn parse(input: &mut impl Stream<Token>) -> Result<Self, ParserError> {
         // Check for string-like array definition
         if let Ok(str_arr) = StringLiteralExprAST::run_parser(input) {
-            return Ok(str_arr)
+            return Ok(str_arr.into())
         }
 
         SingleTokenExprAST::expect(Token::BRACKET_OP, input)?;
@@ -673,7 +692,7 @@ impl ASTNode for DeclarationExprAST {
         match input.next() {
             Some(Token::ASSIGNMENT) => {
                 let value = DeclarationRHSExprAST::run_parser(input)?;
-                Ok(Self { ident: ident, ty: ty, value: value })
+                Ok(Self { ident: ident, ty: ty.into(), value: value })
             },
             next => {
                 Err(ParserError::from(format!("Expected '=' got '{:?}'.", next)))
@@ -802,7 +821,7 @@ impl ASTNode for FuncPrototypeExprAST {
 
             // Get argname
             let argname = IdentifierExprAST::run_parser(input)?;
-            let ty = TypeSpecAST::run_parser(input)?;
+            let ty = TypeSpecAST::run_parser(input)?.into();
             args.push((argname, ty));
 
             // Ignore comma, finish when closing paren hit
